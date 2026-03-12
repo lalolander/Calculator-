@@ -12,40 +12,50 @@ def round_up_to_3m(depth):
 
 def run_deco_simulation(fo2, fhe, max_depth, bottom_time):
     """
-    Runs the Decotengu simulation using the correct Class instantiation.
+    Runs the Decotengu simulation using ZHL-16B.
+    We use Gradient Factors to simulate a 'Ceiling' (conservative) vs 'Theoretical Limit'.
     Returns: offgas_depth, ceiling_depth, stops_list
     """
     try:
-        # 1. Setup the Decompression Model
-        # Correct way: Instantiate the class directly
-        # Options: dt.VpmbModel() or dt.ZhlModel()
-        model = dt.VpmbModel()
+        # 1. Setup the Decompression Model (ZHL-16B)
+        # Decotengu uses ZhlModel. We will apply Gradient Factors later.
+        model = dt.ZhlModel()
         
         # 2. Define Gas Mixes
-        # Decotengu expects gases as a list of tuples: (O2, He)
         gas_mix = (fo2, fhe)
         model.set_gases([gas_mix])
         
-        # 3. Create the Dive Profile
+        # 3. Define Gradient Factors (GF)
+        # GF Low (e.g., 0.30): Simulates a conservative "VPM-like" ceiling.
+        # GF High (e.g., 0.85): Simulates the theoretical max limit.
+        # For this teaching tool, we fix GF Low to find the "Mandatory Stop".
+        gf_low = 0.30
+        gf_high = 0.85
+        model.set_gradient_factors(gf_low, gf_high)
+        
+        # 4. Create the Dive Profile
         descent_rate = 22.0
         ascent_rate = 9.0
         
         # --- Phase A: Run the planner to get Stops & Ceiling ---
         from decotengu import plan as dt_plan
         
-        # Profile format: list of (depth, time) tuples
         dive_profile = [(max_depth, bottom_time)]
         
-        # Run the planner
+        # Run the planner with the set Gradient Factors
         plan_result = dt_plan(model, dive_profile, descent_rate, ascent_rate)
         
+        # The 'ceiling' in the plan result is the deepest stop required based on GF Low
         max_ceiling = plan_result.ceiling
         stops = [{'depth': s.depth, 'time': s.time} for s in plan_result.stops]
         
         # --- Phase B: Manual Simulation to find "Off-Gassing Start" ---
-        # We create a fresh model instance to simulate the ascent step-by-step
-        sim_model = dt.VpmbModel()
+        # Off-gassing is purely physical: Tissue Pressure > Ambient.
+        # It does NOT depend on Gradient Factors.
+        
+        sim_model = dt.ZhlModel()
         sim_model.set_gases([gas_mix])
+        # No gradient factors needed for off-gassing detection
         
         current_depth = 0.0
         step = 0.5 # meters
@@ -75,9 +85,8 @@ def run_deco_simulation(fo2, fhe, max_depth, bottom_time):
             amb_bar = 1.013 + current_depth * 0.098
             is_offgassing = False
             
-            # sim_model.tissues contains the tissue objects
             for t in sim_model.tissues:
-                # t.p is the total inert gas pressure (N2 + He) in bar
+                # t.p is total inert gas pressure
                 if t.p > amb_bar:
                     is_offgassing = True
                     break
@@ -98,11 +107,11 @@ def run_deco_simulation(fo2, fhe, max_depth, bottom_time):
         return None, None, [], None
 
 # --- STREAMLIT UI ---
-st.set_page_config(page_title="VPM-B Dive Planner (Decotengu)", page_icon="🤿", layout="wide")
+st.set_page_config(page_title="ZHL-16B Dive Planner (Decotengu)", page_icon="🤿", layout="wide")
 
-st.title("🤿 Professional VPM-B Decompression Calculator")
+st.title("🤿 Decompression Calculator (ZHL-16B)")
 st.markdown("### Powered by **Decotengu** Library")
-st.info("**Teaching Point:** Compare the **Theoretical Off-Gassing Depth** (when gas starts leaving) with the **Decompression Ceiling** (when it becomes dangerous).")
+st.info("**Teaching Point:** **Off-gassing** (physics) happens when tissues exceed ambient pressure. The **Ceiling** (safety limit) depends on the algorithm's conservatism (Gradient Factors).")
 
 # Sidebar
 with st.sidebar:
@@ -121,6 +130,8 @@ with st.sidebar:
     bottom_time = st.number_input("Bottom Time (min)", min_value=0.0, value=45.0, step=1.0)
     
     st.markdown("---")
+    st.caption("Algorithm: ZHL-16B | GF: 30/85")
+    
     if st.button("Recalculate"):
         st.rerun()
 
@@ -151,7 +162,7 @@ if max_depth > 0:
         
         with col3:
             if ceiling_raw > 0:
-                st.metric("True Safety Margin", f"{true_margin:.1f} m")
+                st.metric("Safety Margin", f"{true_margin:.1f} m")
                 st.caption(f"Plus {rounding_buffer:.1f}m from rounding")
             else:
                 st.metric("Status", "No Deco")
@@ -163,10 +174,10 @@ if max_depth > 0:
             st.warning(f"⚠️ **MANDATORY STOP**: Plan your first stop at **{ceiling_practical:.0f} meters**.")
             
             st.markdown(f"""
-            ### Analysis (Decotengu VPM-B):
-            1. **Off-Gassing Begins**: At **{offgas_raw:.1f}m**, tissues exceed ambient pressure.
-            2. **The Limit**: At **{ceiling_raw:.1f}m**, bubble growth becomes critical.
-            3. **True Margin**: You have **{true_margin:.1f}m** of safe ascent zone.
+            ### Analysis (ZHL-16B with Gradient Factors):
+            1. **Off-Gassing Begins**: At **{offgas_raw:.1f}m**, tissues exceed ambient pressure (Physics).
+            2. **The Limit**: At **{ceiling_raw:.1f}m**, the gradient exceeds the safe limit (Algorithm).
+            3. **Safety Margin**: You have **{true_margin:.1f}m** of safe ascent zone between these points.
             4. **The Rule**: We round the limit ({ceiling_raw:.1f}m) **UP** to **{ceiling_practical:.0f}m**.
             5. **Result**: Your stop is **{rounding_buffer:.1f}m deeper** than the theoretical limit.
             """)
@@ -201,4 +212,4 @@ if max_depth > 0:
         st.error("Failed to calculate profile. Please check inputs.")
 
 st.markdown("---")
-st.caption("Powered by Decotengu | VPM-B Algorithm | Educational Use Only")
+st.caption("Powered by Decotengu | ZHL-16B Algorithm | Educational Use Only")
