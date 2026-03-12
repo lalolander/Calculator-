@@ -204,7 +204,7 @@ if max_depth > 0:
             st.caption(f"(Tissue {offgas_idx+1})")
     
     with col2:
-        st.metric("Bubble Growth Limit", f"{ceiling_raw:.1f} m" if ceiling_raw > 0 else "0.0 m")
+        st.metric("Ceiling", f"{ceiling_raw:.1f} m" if ceiling_raw > 0 else "0.0 m")
         st.caption(f"Planned Stop: {ceiling_practical:.0f} m")
         if ceiling_idx != -1:
             st.caption(f"(Tissue {ceiling_idx+1})")
@@ -225,10 +225,10 @@ if max_depth > 0:
         st.markdown(f"""
         ### Analysis:
         1. **Off-Gassing Begins**: At **{offgas_raw:.1f}m**, tissues start releasing gas safely.
-        2. **Bubble Growth Limit**: At **{ceiling_raw:.1f}m**, the release rate becomes dangerous (bubbles grow).
+        2. **Ceiling**: At **{ceiling_raw:.1f}m**, the release rate becomes dangerous (bubbles grow).
         3. **Safety Margin**: You have **{true_margin:.1f}m** of safe ascent zone between these points.
-        4. **
-        5. **
+        
+        
         """)
         
         # Visualization Chart
