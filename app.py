@@ -12,69 +12,53 @@ def round_up_to_3m(depth):
 
 def run_deco_simulation(fo2, fhe, max_depth, bottom_time):
     """
-    Runs the Decotengu simulation using the Engine.
+    Runs the Decotengu simulation using the correct Class instantiation.
     Returns: offgas_depth, ceiling_depth, stops_list
     """
     try:
         # 1. Setup the Decompression Model
-        # 'vpmb' is the string identifier for VPM-B in Decotengu
-        model = dt.create_model('vpmb')
+        # Correct way: Instantiate the class directly
+        # Options: dt.VpmbModel() or dt.ZhlModel()
+        model = dt.VpmbModel()
         
         # 2. Define Gas Mixes
-        # Decotengu expects gases as a list of tuples or Gas objects: (O2, He)
-        # N2 is automatically 1 - O2 - He
+        # Decotengu expects gases as a list of tuples: (O2, He)
         gas_mix = (fo2, fhe)
         model.set_gases([gas_mix])
         
         # 3. Create the Dive Profile
-        # We manually simulate the profile to extract "Off-gassing start"
-        # Profile: Surface -> Descent -> Bottom -> Ascent
+        descent_rate = 22.0
+        ascent_rate = 9.0
         
-        descent_rate = 22.0 # m/min
-        ascent_rate = 9.0   # m/min
-        
-        # Calculate times
-        descent_time = max_depth / descent_rate
-        
-        # --- Phase A: Run the dive to get the Plan (Stops & Ceiling) ---
-        # We use the high-level planner function included in the engine
-        # dt.plan is a helper that returns a Plan object
+        # --- Phase A: Run the planner to get Stops & Ceiling ---
         from decotengu import plan as dt_plan
         
-        # Create a simple dive definition for the planner
-        # Format: [(depth1, time1), (depth2, time2)...]
-        # This represents the bottom profile only; the planner adds deco stops.
+        # Profile format: list of (depth, time) tuples
         dive_profile = [(max_depth, bottom_time)]
         
         # Run the planner
-        # The planner returns a Plan object with .stops and .ceiling
         plan_result = dt_plan(model, dive_profile, descent_rate, ascent_rate)
         
         max_ceiling = plan_result.ceiling
         stops = [{'depth': s.depth, 'time': s.time} for s in plan_result.stops]
         
         # --- Phase B: Manual Simulation to find "Off-Gassing Start" ---
-        # The planner doesn't explicitly return "off-gassing start depth".
-        # We simulate the ascent step-by-step to find the exact moment tissues > ambient.
-        
-        # Reset model state for manual simulation
-        model = dt.create_model('vpmb')
-        model.set_gases([gas_mix])
+        # We create a fresh model instance to simulate the ascent step-by-step
+        sim_model = dt.VpmbModel()
+        sim_model.set_gases([gas_mix])
         
         current_depth = 0.0
-        current_time = 0.0
+        step = 0.5 # meters
         
         # 1. Descent
-        step = 0.5 # meters
         dt_step = step / descent_rate
         while current_depth < max_depth:
             current_depth += step
             if current_depth > max_depth: current_depth = max_depth
-            model.step(dt_step, current_depth)
+            sim_model.step(dt_step, current_depth)
             
         # 2. Bottom Time
-        # We can do this in one big step or small steps. One step is fine for loading.
-        model.step(bottom_time, max_depth)
+        sim_model.step(bottom_time, max_depth)
         
         # 3. Ascent (to find off-gassing)
         offgas_depth = None
@@ -85,14 +69,14 @@ def run_deco_simulation(fo2, fhe, max_depth, bottom_time):
             if current_depth < 0: current_depth = 0
             
             dt_step = step / ascent_rate
-            model.step(dt_step, current_depth)
+            sim_model.step(dt_step, current_depth)
             
             # Check tissues
             amb_bar = 1.013 + current_depth * 0.098
             is_offgassing = False
             
-            # model.tissues contains the tissue objects
-            for t in model.tissues:
+            # sim_model.tissues contains the tissue objects
+            for t in sim_model.tissues:
                 # t.p is the total inert gas pressure (N2 + He) in bar
                 if t.p > amb_bar:
                     is_offgassing = True
@@ -100,8 +84,6 @@ def run_deco_simulation(fo2, fhe, max_depth, bottom_time):
             
             if is_offgassing and offgas_depth is None:
                 offgas_depth = current_depth
-                # We don't break immediately if we want to be super precise, 
-                # but for teaching, the first detection is fine.
                 break
         
         if offgas_depth is None:
@@ -206,7 +188,7 @@ if max_depth > 0:
             if stops:
                 st.subheader("Decompression Schedule")
                 stop_df = {
-                    'Depth (m)': [int(s['depth']) for s in stops], # Decotengu returns float, cast to int for clean display
+                    'Depth (m)': [int(s['depth']) for s in stops],
                     'Time (min)': [f"{s['time']:.1f}" for s in stops]
                 }
                 st.table(stop_df)
