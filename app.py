@@ -219,4 +219,4 @@ if max_depth > 0:
         st.error("Failed to calculate profile. Please check inputs.")
 
 st.markdown("---")
-st.caption("Powered by Decotengu | VPM-B Algorithm | Educational Use Only
+st.caption("Powered by Decotengu | VPM-B Algorithm | Educational Use Only")
