@@ -83,7 +83,7 @@ def calculate_bubble_limit_ceiling(n2_loading, he_loading, depth):
     Returns: (ceiling_depth, leading_tissue_index)
     """
     ambient = calculate_ambient_pressure(depth)
-    total_loading = n2_loading + he_load
+    total_loading = n2_loading + he_loading
     
     # Get the 16 unique critical gradients (Bubble Growth Limits)
     g_crits = config.get_vpm_gradients()
@@ -222,12 +222,13 @@ if max_depth > 0:
     if ceiling_practical > 0:
         st.warning(f"⚠️ **MANDATORY STOP**: Plan your first stop at **{ceiling_practical:.0f} meters**.")
         
-        # UPDATED MARKDOWN: Points 4 and 5 removed
         st.markdown(f"""
         ### Analysis:
         1. **Off-Gassing Begins**: At **{offgas_raw:.1f}m**, tissues start releasing gas safely.
         2. **Bubble Growth Limit**: At **{ceiling_raw:.1f}m**, the release rate becomes dangerous (bubbles grow).
         3. **Safety Margin**: You have **{true_margin:.1f}m** of safe ascent zone between these points.
+        4. **
+        5. **
         """)
         
         # Visualization Chart
@@ -282,4 +283,4 @@ else:
     st.info("Please enter a depth greater than 0.")
 
 st.markdown("---")
-st.caption("VPM-B Algorithm | Per-Tissue Bubble Limits | 3m Rounding Rule | Educational Use Only")
+st.caption("Decompression Zone| Per-Tissue Bubble Limits | 3m Rounding Rule | Educational Use Only")
