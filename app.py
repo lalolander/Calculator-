@@ -107,10 +107,10 @@ def simulate_ascent_full(max_depth, bottom_time, fo2, fn2, fhe):
     return offgas_depth, offgas_tissue, max_ceiling, ceiling_tissue
 
 # --- STREAMLIT UI ---
-st.set_page_config(page_title="VPM-B Dive Planner", page_icon="🤿", layout="wide")
+st.set_page_config(page_title="Decompression Zone Calculator", page_icon="🤿", layout="wide")
 
-st.title("🤿 Off-gassing Decompression Calculator by Carlos Lander")
-st.markdown("### Teaching Tool: Theory vs. Practical Stops")
+st.title("🤿 Decompression zone Calculator")
+st.markdown("### Teaching Tool: Critical Radius Calculator per Tissue")
 st.info("**Rule:** Decompression stops are always rounded **UP** to the next deeper **3-meter increment** (3, 6, 9, 12...) to ensure a safety margin.")
 
 # Sidebar
@@ -222,4 +222,4 @@ else:
     st.info("Please enter a depth greater than 0.")
 
 st.markdown("---")
-st.caption("VPM-B Algorithm | 3-Meter Increment Rounding | Educational Use Only")
+st.caption("Critical radius per tissue based on VPM| 3-Meter Increment Rounding | Educational Use Only")
