@@ -157,7 +157,7 @@ st.set_page_config(page_title="Bubble Growth Limit Calculator", page_icon="🫧"
 
 st.title("🫧 Teaching Tool: Bubble Growth Limit per Tissue")
 st.markdown("### Understanding VPM-B Decompression Physics")
-st.info("**Key Concept:** **Off-gassing** starts when gas leaves the tissue. The **Bubble Growth Limit** is the depth where that gas release becomes fast enough to grow dangerous bubbles. We must stop deeper than this limit.")
+st.info("**Key Concept:** **Off-gassing** and **Ceiling.**")
 
 # Sidebar
 with st.sidebar:
