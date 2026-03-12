@@ -1,5 +1,6 @@
 import numpy as np
 import streamlit as st
+import math
 
 # --- CONFIGURATION CLASS ---
 class DiveConfig:
@@ -24,7 +25,18 @@ class DiveConfig:
 
 config = DiveConfig()
 
-# --- PHYSICS FUNCTIONS ---
+# --- HELPER FUNCTIONS ---
+
+def round_up_to_3m(depth):
+    """
+    Rounds a depth up to the next deeper 3-meter increment.
+    Standard stops: 3, 6, 9, 12, 15, 18, 21...
+    """
+    if depth <= 0:
+        return 0.0
+    # Divide by 3, ceil to next integer, multiply by 3
+    return math.ceil(depth / 3.0) * 3.0
+
 def calculate_ambient_pressure(depth):
     return config.SURFACE_PRESSURE + depth * config.BAR_PER_METER
 
@@ -97,9 +109,9 @@ def simulate_ascent_full(max_depth, bottom_time, fo2, fn2, fhe):
 # --- STREAMLIT UI ---
 st.set_page_config(page_title="VPM-B Dive Planner", page_icon="🤿", layout="wide")
 
-st.title("🤿 VPM-B Decompression Calculator")
-st.markdown("### Teaching Tool: Off-Gassing vs. Decompression Ceiling")
-st.info("**Key Concept:** Off-gassing starts when tissues exceed ambient pressure. The **Ceiling** is where that off-gassing becomes dangerous (bubble growth).")
+st.title("🤿 Off-gassing Decompression Calculator by Carlos Lander")
+st.markdown("### Teaching Tool: Theory vs. Practical Stops")
+st.info("**Rule:** Decompression stops are always rounded **UP** to the next deeper **3-meter increment** (3, 6, 9, 12...) to ensure a safety margin.")
 
 # Sidebar
 with st.sidebar:
@@ -123,68 +135,80 @@ with st.sidebar:
 
 # Main Calculation
 if max_depth > 0:
-    offgas_depth, offgas_tissue_idx, ceiling_depth, ceiling_tissue_idx = simulate_ascent_full(max_depth, bottom_time, fo2, fn2, fhe)
+    offgas_depth_raw, offgas_tissue_idx, ceiling_raw, ceiling_tissue_idx = simulate_ascent_full(max_depth, bottom_time, fo2, fn2, fhe)
+    
+    # Apply the 3m rounding rule
+    offgas_practical = round_up_to_3m(offgas_depth_raw) if offgas_depth_raw else 0.0
+    ceiling_practical = round_up_to_3m(ceiling_raw) if ceiling_raw > 0 else 0.0
     
     st.divider()
     
-    # Display Metrics Side-by-Side
+    # Display Metrics
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.metric("Off-Gassing Starts", f"{offgas_depth:.1f} m" if offgas_depth else "Surface")
-        if offgas_tissue_idx != -1:
-            st.caption(f"(Tissue {offgas_tissue_idx+1})")
+        st.metric("Theoretical Off-Gassing", f"{offgas_depth_raw:.1f} m" if offgas_depth_raw else "Surface")
+        st.caption(f"Practical: {offgas_practical:.0f} m")
     
     with col2:
-        st.metric("Decompression Ceiling", f"{ceiling_depth:.1f} m" if ceiling_depth > 0 else "0.0 m")
-        if ceiling_tissue_idx != -1:
-            st.caption(f"(Tissue {ceiling_tissue_idx+1})")
+        st.metric("Theoretical Ceiling", f"{ceiling_raw:.1f} m" if ceiling_raw > 0 else "0.0 m")
+        st.caption(f"Practical Stop: {ceiling_practical:.0f} m")
     
     with col3:
-        diff = (offgas_depth - ceiling_depth) if offgas_depth and ceiling_depth > 0 else 0
-        st.metric("Safety Margin", f"{diff:.1f} m")
-        
+        if ceiling_practical > 0:
+            margin = offgas_practical - ceiling_practical
+            st.metric("Safety Margin", f"{margin:.0f} m")
+        else:
+            st.metric("Status", "No Deco")
+
     # Visual Explanation
-    st.subheader("Ascent Profile Visualization")
+    st.subheader("Ascent Profile & Stop Planning")
     
-    if ceiling_depth > 0:
-        st.warning(f"⚠️ **STOP REQUIRED**: You must stop at **{ceiling_depth:.1f}m**.")
+    if ceiling_practical > 0:
+        st.warning(f"⚠️ **MANDATORY STOP**: Plan your first stop at **{ceiling_practical:.0f} meters**.")
         st.markdown(f"""
-        - You start off-gassing at **{offgas_depth:.1f}m**.
-        - However, ascending shallower than **{ceiling_depth:.1f}m** is unsafe.
-        - **Difference**: You must wait **{offgas_depth - ceiling_depth:.1f}m** deeper than the natural off-gassing point to prevent bubble growth.
+        - **Theory**: Your tissues force a ceiling at **{ceiling_raw:.1f}m**.
+        - **Practice**: We round up to the next 3m increment → **{ceiling_practical:.0f}m**.
+        - **Off-Gassing**: Starts at **{offgas_depth_raw:.1f}m** (Rounded: {offgas_practical:.0f}m).
+        - **Result**: You will hold at {ceiling_practical:.0f}m until your tissues allow you to ascend to the next stop ({ceiling_practical - 3:.0f}m).
         """)
         
-        # Simple Chart of Depths
+        # Visualization Chart
+        # Create a list of standard stops for the chart context
+        max_stop = max(ceiling_practical, offgas_practical, max_depth)
+        stops = list(range(0, int(max_stop) + 4, 3))
+        
         chart_data = {
-            'Zone': ['Surface', f'Ceiling ({ceiling_depth:.1f}m)', f'Off-Gassing Start ({offgas_depth:.1f}m)', f'Bottom ({max_depth}m)'],
-            'Depth (m)': [0, ceiling_depth, offgas_depth, max_depth]
+            'Reference Points': ['Surface (0m)', f'First Stop ({ceiling_practical:.0f}m)', f'Off-Gassing Start ({offgas_practical:.0f}m)', f'Max Depth ({max_depth}m)'],
+            'Depth (m)': [0, ceiling_practical, offgas_practical, max_depth]
         }
-        st.bar_chart(chart_data, x='Zone', y='Depth (m)', horizontal=True)
+        st.bar_chart(chart_data, x='Reference Points', y='Depth (m)', horizontal=True)
+        
+        st.success(f"✅ **Plan**: Ascend to **{ceiling_practical:.0f}m**. Stay there until the ceiling drops to {ceiling_practical - 3:.0f}m.")
         
     else:
         st.success("✅ **No Decompression Stop Required**.")
-        st.markdown(f"Off-gassing begins at **{offgas_depth:.1f}m**, but the gradient is safe all the way to the surface.")
+        st.markdown(f"Off-gassing begins at **{offgas_depth_raw:.1f}m**. You can ascend directly to the surface, but a safety stop at **3m** is recommended.")
 
     # Detailed Tissue Chart
     st.divider()
-    st.subheader("Tissue Analysis at Ceiling Depth")
+    st.subheader("Tissue Analysis at Practical Stop Depth")
     
-    # Recreate state at ceiling for the chart
-    if ceiling_depth > 0 and offgas_depth:
-        # Simulate down to ceiling to get exact loads
+    if ceiling_practical > 0:
+        st.caption(f"Showing tissue status at the planned stop depth of {ceiling_practical:.0f}m.")
+        # Simulate down to the PRACTICAL stop depth
         n2_load, he_load = load_tissues(max_depth, bottom_time, fo2, fn2, fhe)
-        # Quick step down to ceiling (approx)
-        steps = int((max_depth - ceiling_depth) / 0.5)
+        steps = int((max_depth - ceiling_practical) / 0.5)
         curr_d = max_depth
         for _ in range(steps):
             curr_d -= 0.5
+            if curr_d < ceiling_practical: curr_d = ceiling_practical
             n2_load, he_load = load_tissues(curr_d, 0.05, fo2, fn2, fhe, initial_n2=n2_load, initial_he=he_load)
             
         total_load = n2_load + he_load
         g_crits = config.get_vpm_gradients()
-        ambient_at_ceiling = calculate_ambient_pressure(ceiling_depth)
-        limits = ambient_at_ceiling + g_crits
+        ambient_at_stop = calculate_ambient_pressure(ceiling_practical)
+        limits = ambient_at_stop + g_crits
         
         chart_data = {
             'Tissue': [f"T{i+1}" for i in range(16)],
@@ -192,10 +216,10 @@ if max_depth > 0:
             'Critical Limit': limits
         }
         st.bar_chart(chart_data, x='Tissue', y=['Inert Gas Pressure', 'Critical Limit'])
-        st.caption("Blue bars above the gray line indicate tissues forcing the decompression stop.")
+        st.caption("At the rounded stop depth, the ambient pressure is slightly higher than the theoretical ceiling, providing a safety buffer.")
 
 else:
     st.info("Please enter a depth greater than 0.")
 
 st.markdown("---")
-st.caption("VPM-B Algorithm | Per-Tissue Gradients | Educational Use Only")
+st.caption("VPM-B Algorithm | 3-Meter Increment Rounding | Educational Use Only")
