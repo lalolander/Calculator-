@@ -227,9 +227,6 @@ if max_depth > 0:
         1. **Off-Gassing Begins**: At **{offgas_raw:.1f}m**, tissues start releasing gas safely.
         2. **Bubble Growth Limit**: At **{ceiling_raw:.1f}m**, the release rate becomes dangerous (bubbles grow).
         3. **Safety Margin**: You have **{true_margin:.1f}m** of safe ascent zone between these points.
-        4. **The Rule**: We round the limit ({ceiling_raw:.1f}m) **UP** to **{ceiling_practical:.0f}m**.
-        5. **Result**: Your stop is **{rounding_buffer:.1f}m deeper** than the limit, ensuring bubbles stay small.
-        """)
         
         # Visualization Chart
         chart_data = {
