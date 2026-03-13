@@ -1,5 +1,5 @@
 """
-Decompression Teaching Tool v4
+Decompression Teaching Tool v4 by Carlos Lander
 ================================
 Two calculations only:
   1. Off-gassing Start Depth  — VPM: depth where leading tissue first becomes
@@ -344,7 +344,7 @@ st.title("🫧 Decompression Teaching Tool")
 st.caption(
     "**VPM** → off-gassing start depth  |  "
     "**Bühlmann ZHL-16C** → ceiling depth  |  "
-    "No gradient factors  ·  No stop scheduling  ·  Educational use only"
+    "No gradient factors  ·  No stop scheduling  ·  Educational use only  ·  by Carlos Lander"
 )
 
 st.divider()
