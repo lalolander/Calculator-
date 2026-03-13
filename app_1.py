@@ -1,428 +1,274 @@
+"""
+Decompression Teaching Tool v3
+===============================
+Focuses exclusively on two concepts:
+  1. Off-gassing Start Depth  — the depth at which any tissue becomes supersaturated
+  2. Ceiling Depth            — the minimum safe depth, per Bühlmann ZHL-16C and VPM-B
+
+No deco stop scheduling. No total deco time. Just the physics of those two depths.
+"""
+
 import numpy as np
 import streamlit as st
 import math
 import pandas as pd
 
 # =============================================================================
-# PHYSICS ENGINE v2 — Enhanced ZHL-16C + VPM-B Bubble Nucleation
+# CONFIGURATION — ZHL-16C Coefficients (Bühlmann 1995, Baker 1998)
 # =============================================================================
 
 class DiveConfig:
-    """
-    ZHL-16C coefficients (Bühlmann 1995, Baker 1998 edition).
-    Each compartment has: half-time (N2 & He), 'a' value, 'b' value.
-    The 'a' values set the y-intercept of the M-value line (max supersaturation at 0 bar).
-    The 'b' values set the slope (how M-value changes with depth).
-    """
-    def __init__(self):
-        # --- ZHL-16C Tissue Compartments ---
-        self.N_COMPARTMENTS = 16
+    N_COMPARTMENTS = 16
 
-        self.HALF_TIMES_N2 = np.array([
-            4.0, 8.0, 12.5, 18.5, 27.0, 38.3, 54.3, 77.0,
-            109.0, 146.0, 187.0, 239.0, 305.0, 390.0, 498.0, 635.0
-        ])
-        self.HALF_TIMES_HE = np.array([
-            1.51, 3.02, 4.72, 6.99, 10.21, 14.48, 20.53, 29.11,
-            41.20, 55.19, 70.69, 90.34, 115.29, 147.42, 188.24, 240.03
-        ])
+    # Half-times (minutes)
+    HALF_TIMES_N2 = np.array([
+        4.0, 8.0, 12.5, 18.5, 27.0, 38.3, 54.3, 77.0,
+        109.0, 146.0, 187.0, 239.0, 305.0, 390.0, 498.0, 635.0
+    ])
+    HALF_TIMES_HE = np.array([
+        1.51, 3.02, 4.72, 6.99, 10.21, 14.48, 20.53, 29.11,
+        41.20, 55.19, 70.69, 90.34, 115.29, 147.42, 188.24, 240.03
+    ])
 
-        # ZHL-16C 'a' coefficients (bar) — N2
-        self.A_N2 = np.array([
-            1.2599, 1.0000, 0.8618, 0.7562, 0.6200, 0.5043, 0.4410, 0.4000,
-            0.3750, 0.3500, 0.3295, 0.3065, 0.2835, 0.2610, 0.2480, 0.2327
-        ])
-        # ZHL-16C 'b' coefficients (dimensionless) — N2
-        self.B_N2 = np.array([
-            0.5050, 0.6514, 0.7222, 0.7825, 0.8126, 0.8434, 0.8693, 0.8910,
-            0.9092, 0.9222, 0.9319, 0.9403, 0.9477, 0.9544, 0.9602, 0.9653
-        ])
-        # ZHL-16C 'a' coefficients (bar) — He
-        self.A_HE = np.array([
-            1.7424, 1.3830, 1.1919, 1.0458, 0.9220, 0.8205, 0.7305, 0.6502,
-            0.5950, 0.5545, 0.5333, 0.5189, 0.5181, 0.5176, 0.5172, 0.5119
-        ])
-        # ZHL-16C 'b' coefficients (dimensionless) — He
-        self.B_HE = np.array([
-            0.4245, 0.5747, 0.6527, 0.7223, 0.7582, 0.7957, 0.8279, 0.8553,
-            0.8757, 0.8903, 0.8997, 0.9073, 0.9122, 0.9171, 0.9217, 0.9267
-        ])
+    # ZHL-16C 'a' coefficients (bar) — N2
+    A_N2 = np.array([
+        1.2599, 1.0000, 0.8618, 0.7562, 0.6200, 0.5043, 0.4410, 0.4000,
+        0.3750, 0.3500, 0.3295, 0.3065, 0.2835, 0.2610, 0.2480, 0.2327
+    ])
+    # ZHL-16C 'b' coefficients (dimensionless) — N2
+    B_N2 = np.array([
+        0.5050, 0.6514, 0.7222, 0.7825, 0.8126, 0.8434, 0.8693, 0.8910,
+        0.9092, 0.9222, 0.9319, 0.9403, 0.9477, 0.9544, 0.9602, 0.9653
+    ])
+    # ZHL-16C 'a' coefficients (bar) — He
+    A_HE = np.array([
+        1.7424, 1.3830, 1.1919, 1.0458, 0.9220, 0.8205, 0.7305, 0.6502,
+        0.5950, 0.5545, 0.5333, 0.5189, 0.5181, 0.5176, 0.5172, 0.5119
+    ])
+    # ZHL-16C 'b' coefficients (dimensionless) — He
+    B_HE = np.array([
+        0.4245, 0.5747, 0.6527, 0.7223, 0.7582, 0.7957, 0.8279, 0.8553,
+        0.8757, 0.8903, 0.8997, 0.9073, 0.9122, 0.9171, 0.9217, 0.9267
+    ])
 
-        # --- Environment ---
-        self.SURFACE_PRESSURE = 1.013  # bar
-        self.BAR_PER_METER     = 0.0998  # bar/m (seawater, 1025 kg/m³)
-        self.PRESSURE_OTHER_GASES = 0.0627  # water vapor + CO2 (bar) at 37°C
+    # Environment
+    SURFACE_PRESSURE    = 1.013    # bar (1 atm)
+    BAR_PER_METER       = 0.09985  # bar/m seawater (1025 kg/m³)
+    WATER_VAPOUR_PRESS  = 0.0627   # bar at 37 °C (alveolar)
 
-        # --- Ascent / Stop Parameters ---
-        self.ASCENT_RATE   = 9.0   # m/min
-        self.DESCENT_RATE  = 20.0  # m/min
-        self.MIN_STOP_TIME = 1.0   # minutes per stop increment
-        self.STOP_INCREMENT = 3.0  # metres between stops
+    # Ascent rate for the scan-only simulation
+    ASCENT_RATE  = 9.0   # m/min
+    DESCENT_RATE = 20.0  # m/min
 
-        # --- VPM-B Bubble Nucleation Parameters ---
-        # Gamma (surface tension of nucleus, N/m) — varies with gas mix
-        self.GAMMA_C      = 0.0179  # critical surface tension (N/m)
-        self.GAMMA_INIT   = 0.0257  # initial surface tension (N/m)
-        # Initial critical radius (metres, ~0.8 μm typical)
-        self.R_INITIAL    = 0.8e-6  # 0.8 micrometres
-        # Skin compression coefficient (λ) — resists bubble growth
-        self.LAMBDA_CE    = 7500.0  # (N/m²) / (bar of supersaturation)
+    # VPM-B nucleus parameters (Yount 1979)
+    GAMMA_C   = 0.0179   # critical surface tension, N/m
+    R_INITIAL = 0.8e-6   # initial bubble nucleus radius, m (0.8 μm)
+    LAMBDA_CE = 7500.0   # skin compression coefficient, Pa/bar equivalent
 
-        # --- Pre-computed rate constants ---
-        self.k_n2 = np.log(2) / self.HALF_TIMES_N2
-        self.k_he = np.log(2) / self.HALF_TIMES_HE
+    # Pre-computed rate constants
+    k_n2 = np.log(2) / HALF_TIMES_N2
+    k_he = np.log(2) / HALF_TIMES_HE
 
-        # --- Gradient Factor defaults ---
-        self.GF_LO = 0.30   # GF at deepest stop
-        self.GF_HI = 0.85   # GF at surface
-
-    def mixed_a_b(self, fn2: float, fhe: float) -> tuple[np.ndarray, np.ndarray]:
+    @classmethod
+    def mixed_ab(cls, fn2: float, fhe: float):
         """
-        Helium-weighted interpolation of a and b values (Baker/Bühlmann method).
-        a_mix = (a_n2 * fN2 + a_he * fHe) / (fN2 + fHe)
+        He-fraction-weighted interpolation of a and b (Baker/Bühlmann method).
+        Used for Trimix where both N2 and He contribute to tissue loading.
         """
         denom = fn2 + fhe
-        if denom == 0:
-            return self.A_N2.copy(), self.B_N2.copy()
-        a = (self.A_N2 * fn2 + self.A_HE * fhe) / denom
-        b = (self.B_N2 * fn2 + self.B_HE * fhe) / denom
+        if denom < 1e-9:
+            return cls.A_N2.copy(), cls.B_N2.copy()
+        a = (cls.A_N2 * fn2 + cls.A_HE * fhe) / denom
+        b = (cls.B_N2 * fn2 + cls.B_HE * fhe) / denom
         return a, b
 
 
-config = DiveConfig()
+cfg = DiveConfig()
 
 
 # =============================================================================
-# CORE PHYSICS FUNCTIONS
+# PHYSICS FUNCTIONS
 # =============================================================================
 
 def depth_to_pressure(depth: float) -> float:
-    return config.SURFACE_PRESSURE + depth * config.BAR_PER_METER
-
-def pressure_to_depth(pressure: float) -> float:
-    return max(0.0, (pressure - config.SURFACE_PRESSURE) / config.BAR_PER_METER)
-
-def inspired_pp(depth: float, fo2: float, fn2: float, fhe: float) -> tuple:
-    """Inspired partial pressures, corrected for water vapour + CO₂."""
-    amb = depth_to_pressure(depth)
-    dry = amb - config.PRESSURE_OTHER_GASES
-    dry = max(dry, 0.0)
-    return fo2 * dry, fn2 * dry, fhe * dry
+    """Absolute pressure at depth (bar)."""
+    return cfg.SURFACE_PRESSURE + depth * cfg.BAR_PER_METER
 
 
-def load_tissues(
-    depth: float, time_min: float,
-    fo2: float, fn2: float, fhe: float,
-    n2_init: np.ndarray, he_init: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
+def pressure_to_depth(p: float) -> float:
+    """Convert absolute pressure back to depth (m), clipped to 0."""
+    return max(0.0, (p - cfg.SURFACE_PRESSURE) / cfg.BAR_PER_METER)
+
+
+def inspired_pp(depth: float, fo2: float, fn2: float, fhe: float):
     """
-    Exact Haldanian exponential loading for a single depth/time segment.
-    Works for both on-gassing and off-gassing — direction is automatic.
+    Alveolar inspired partial pressures, corrected for water vapour.
+    P_insp_gas = fgas * (P_amb - P_H2O)
+    """
+    p_amb = depth_to_pressure(depth)
+    p_dry = max(0.0, p_amb - cfg.WATER_VAPOUR_PRESS)
+    return fo2 * p_dry, fn2 * p_dry, fhe * p_dry
+
+
+def schreiner_load(depth: float, t: float,
+                   fo2: float, fn2: float, fhe: float,
+                   n2_0: np.ndarray, he_0: np.ndarray):
+    """
+    Exact Haldanian exponential gas loading for a constant-depth segment.
+    Valid for on-gassing and off-gassing equally — direction is automatic.
+
+    P_t = P_insp + (P_0 - P_insp) * exp(-k * t)
     """
     _, p_n2, p_he = inspired_pp(depth, fo2, fn2, fhe)
-    n2 = p_n2 + (n2_init - p_n2) * np.exp(-config.k_n2 * time_min)
-    he = p_he + (he_init - p_he) * np.exp(-config.k_he * time_min)
+    n2 = p_n2 + (n2_0 - p_n2) * np.exp(-cfg.k_n2 * t)
+    he = p_he + (he_0 - p_he) * np.exp(-cfg.k_he * t)
     return n2, he
 
 
-# =============================================================================
-# ZHL-16C M-VALUE CEILING
-# =============================================================================
+# --- Bühlmann Ceiling ---
 
-def buhlmann_ceiling(n2: np.ndarray, he: np.ndarray, fn2: float, fhe: float, gf: float = 1.0) -> float:
+def buhlmann_ceiling_depth(n2: np.ndarray, he: np.ndarray,
+                            fn2: float, fhe: float, gf: float = 1.0) -> tuple:
     """
-    Compute the Bühlmann M-value ceiling depth for the current tissue loadings.
+    Minimum ambient pressure (depth) at which NO tissue exceeds its M-value.
 
-    M-value limit:  P_tol = (P_tissue - a_mix) * b_mix
-    So the minimum tolerated ambient pressure = (P_tissue - a*gf) * b / (2 - b) … simplified:
-        P_amb_tol = (P_t - a_mix * gf) * b_mix
+    M-value line:  M = P_t / b + a   (Bühlmann)
+    Rearranged to minimum tolerated ambient pressure:
+        P_min = (P_t - a * gf) * b
 
-    With gradient factors:
-        P_amb_tol = (P_t - a_mix * gf) * b_mix
-    Standard rearrangement:
-        P_ceiling = (Pt - a * gf) * b    <- minimum ambient (bar)
+    Returns (ceiling_depth_m, leading_tissue_index).
+    GF < 1.0 applies a gradient factor (Baker 1998) — more conservative.
     """
-    a, b = config.mixed_a_b(fn2, fhe)
+    a, b = cfg.mixed_ab(fn2, fhe)
     pt = n2 + he
-    p_ceiling = (pt - a * gf) * b
-    p_ceiling = np.maximum(p_ceiling, 0.0)
-    max_p = np.max(p_ceiling)
-    return pressure_to_depth(max_p + config.SURFACE_PRESSURE) if max_p > 0 else 0.0
+    p_min = (pt - a * gf) * b          # minimum ambient pressure per compartment
+    p_min = np.maximum(p_min, 0.0)     # can't be negative
+    idx   = int(np.argmax(p_min))
+    depth = pressure_to_depth(p_min[idx] + cfg.SURFACE_PRESSURE)
+    return depth, idx
 
 
-def leading_tissue_index(n2: np.ndarray, he: np.ndarray, fn2: float, fhe: float) -> int:
-    a, b = config.mixed_a_b(fn2, fhe)
-    pt = n2 + he
-    p_ceiling = (pt - a) * b
-    return int(np.argmax(p_ceiling))
+# --- VPM-B Ceiling ---
+
+def vpm_crush_radius(max_pressure: float) -> np.ndarray:
+    """
+    After exposure to max_pressure (bar absolute), nuclei are compressed.
+    All 16 compartments share the same crushing because VPM-B applies a
+    single ambient-pressure history, not per-compartment nucleation.
+
+    r_crit = (2 * gamma_c * r0) / (2 * gamma_c + lambda * delta_P)
+
+    delta_P = max_pressure - surface_pressure  (the actual crush overpressure)
+    """
+    delta_p = max(0.0, max_pressure - cfg.SURFACE_PRESSURE)  # bar
+    # Convert lambda from Pa/bar-equiv to consistent units (both in bar-space):
+    # LAMBDA_CE is given in Pa-equivalent per bar; 1 bar = 100000 Pa
+    # We keep everything in N/m and bar by noting:
+    #   2*gamma_c has units N/m = J/m² → use directly
+    #   lambda * delta_P must also be N/m → LAMBDA_CE is in N/m per bar of delta_P
+    lam_bar = cfg.LAMBDA_CE / 1e5      # convert to (N/m)/bar
+    numerator   = 2.0 * cfg.GAMMA_C * cfg.R_INITIAL
+    denominator = 2.0 * cfg.GAMMA_C + lam_bar * delta_p
+    r_crit = numerator / denominator
+    return np.full(cfg.N_COMPARTMENTS, r_crit)   # same radius for all compartments
+
+
+def vpm_allowable_supersaturation(r_crit: np.ndarray) -> np.ndarray:
+    """
+    Per-compartment allowable supersaturation (bar) before bubble nucleation.
+    Young-Laplace:  delta_P_allow = 2 * gamma_c / r_crit
+    """
+    return (2.0 * cfg.GAMMA_C) / r_crit
+
+
+def vpm_ceiling_depth(n2: np.ndarray, he: np.ndarray, r_crit: np.ndarray) -> tuple:
+    """
+    VPM-B ceiling: the depth above which bubble nucleation would occur.
+    Per compartment:
+        P_min_amb = P_tissue - delta_P_allow
+    Returns (ceiling_depth_m, leading_tissue_index).
+    """
+    delta_p_allow = vpm_allowable_supersaturation(r_crit)
+    p_min = (n2 + he) - delta_p_allow
+    p_min = np.maximum(p_min, 0.0)
+    idx   = int(np.argmax(p_min))
+    depth = pressure_to_depth(p_min[idx] + cfg.SURFACE_PRESSURE)
+    return depth, idx
+
+
+# --- Off-gassing Start ---
+
+def offgas_start_depth(n2: np.ndarray, he: np.ndarray) -> tuple:
+    """
+    The depth at which the diver is currently sitting where ANY tissue
+    pressure exceeds ambient — the first moment tissues start releasing gas.
+
+    Rearranged: P_tissue > P_amb  →  depth < (P_tissue - P_surface) / BAR_PER_METER
+    The shallowest depth at which this happens for the *most loaded* tissue
+    defines where off-gassing begins.
+
+    Returns (offgas_depth_m, leading_tissue_index).
+    If tissues are below ambient (still on-gassing), returns (0.0, -1).
+    """
+    # For each tissue, the depth at which it exactly equals ambient:
+    # P_t = P_surface + depth * BAR_PER_METER  →  depth = (P_t - P_surface) / BAR_PER_METER
+    depths = pressure_to_depth(n2 + he)        # works element-wise (returns array)
+    # "Off-gassing start" = the *deepest* of these depths, because that tissue
+    # requires the highest ambient to stay in solution.
+    idx   = int(np.argmax(depths))
+    depth = float(depths[idx])
+    if depth <= 0.0:
+        return 0.0, -1
+    return depth, idx
+
+
+def round_up_3m(d: float) -> float:
+    """Round a depth UP to the next 3 m increment."""
+    if d <= 0:
+        return 0.0
+    return math.ceil(d / 3.0) * 3.0
 
 
 # =============================================================================
-# VPM-B BUBBLE NUCLEATION MODEL
+# SIMULATION — Descent + Bottom Only (no stop scheduling)
 # =============================================================================
 
-class BubbleTracker:
+def simulate_bottom(max_depth: float, bottom_time: float,
+                    fo2: float, fn2: float, fhe: float,
+                    dt: float = 0.25) -> tuple:
     """
-    Tracks the critical radius and allowable supersaturation for each of the
-    16 tissue compartments using VPM-B (Yount & Hoffman 1986, Maiken 1995).
+    Simulates descent then bottom phase with continuous tissue loading.
+    Returns (n2_tissues, he_tissues, r_crit, max_ambient_pressure).
 
-    Key physics:
-    ─────────────────────────────────────────────────────────────────────
-    • At depth, the ambient pressure compresses bubble nuclei from their
-      resting radius r₀ to a smaller radius rᵢ.
-    • On ascent, if supersaturation exceeds the "crushing pressure" the
-      nucleus grows — this marks bubble nucleation.
-    • The allowable supersaturation per compartment is:
-
-          ΔP_allow = 2γ/r_crit    (Young-Laplace)
-
-    • r_crit shrinks when a high pressure exposure "crushes" nuclei and
-      then the diver surfaces — a history-dependent effect.
-    ─────────────────────────────────────────────────────────────────────
+    dt : time step in minutes (0.25 min = 15 s)
     """
+    # Surface equilibrium (79.02% N2 at surface dry pressure)
+    p_dry_surface = cfg.SURFACE_PRESSURE - cfg.WATER_VAPOUR_PRESS
+    n2 = np.full(cfg.N_COMPARTMENTS, 0.7902 * p_dry_surface)
+    he = np.zeros(cfg.N_COMPARTMENTS)
 
-    def __init__(self):
-        # Initial critical radii — all compartments start at R_INITIAL
-        self.r_crit = np.full(config.N_COMPARTMENTS, config.R_INITIAL, dtype=float)
-        self.max_crushing_pressure = np.zeros(config.N_COMPARTMENTS, dtype=float)
+    max_amb = cfg.SURFACE_PRESSURE   # tracks peak pressure for VPM-B crushing
 
-    def update_crushing(self, ambient_pressure: float):
-        """
-        During descent/bottom phase, high ambient pressure can crush nuclei,
-        reducing r_crit and therefore *increasing* the allowable supersaturation
-        on ascent (nuclei harder to grow). Called every time-step.
-        """
-        p_surface = config.SURFACE_PRESSURE
-        # Crushing pressure = how far above surface ambient pressure
-        p_crush = max(0.0, ambient_pressure - p_surface)
-        self.max_crushing_pressure = np.maximum(self.max_crushing_pressure, p_crush)
-
-        # Reduced radius after compression:
-        # r_crushed = r_init * (2γ_c) / (2γ_c + λ * p_crush)
-        # λ_CE is the skin-compression coefficient
-        numerator   = 2.0 * config.GAMMA_C * config.R_INITIAL
-        denominator = 2.0 * config.GAMMA_C + config.LAMBDA_CE * self.max_crushing_pressure
-        self.r_crit = numerator / denominator
-
-    def allowable_supersaturation(self) -> np.ndarray:
-        """
-        Per-compartment allowable supersaturation (bar) before bubble growth:
-            ΔP_allow = (2γ / r_crit) * conservatism_scaling
-        Larger r_crit → smaller allowable ΔP (easier to nucleate).
-        Crushed nucleus → smaller r_crit → larger allowable ΔP (harder to nucleate).
-        """
-        return (2.0 * config.GAMMA_C) / self.r_crit
-
-    def vpm_ceiling_depth(self, n2: np.ndarray, he: np.ndarray) -> float:
-        """
-        Returns the depth (m) above which bubble nucleation would occur.
-        For each compartment:
-            P_min_amb = P_tissue - ΔP_allow
-        The ceiling is the depth corresponding to max(P_min_amb).
-        """
-        p_min = (n2 + he) - self.allowable_supersaturation()
-        p_min = np.maximum(p_min, 0.0)
-        return pressure_to_depth(np.max(p_min) + config.SURFACE_PRESSURE) if np.max(p_min) > 0 else 0.0
-
-
-# =============================================================================
-# FULL DIVE SIMULATION WITH CONTINUOUS ON-GASSING
-# =============================================================================
-
-def run_full_simulation(
-    max_depth: float,
-    bottom_time: float,
-    fo2: float, fn2: float, fhe: float,
-    gf_lo: float = 0.30,
-    gf_hi: float = 0.85,
-    dt: float = 0.1   # minutes per simulation step
-) -> dict:
-    """
-    Simulates descent → bottom → ascent with deco stops.
-    Tracks tissue loading, Bühlmann M-values, and VPM-B bubble nucleation
-    continuously — including on-gassing *during* deco stops.
-
-    Returns a rich dict with:
-      - deco_schedule : list of (depth_m, stop_time_min) tuples
-      - tissue_history: list of snapshots for plotting
-      - offgas_depth   : depth where first supersaturation occurs
-      - bubble_tracker : final BubbleTracker state
-      - total_deco_time
-      - ndl            : no-decompression limit (if no stops needed)
-    """
-
-    # --- Initial tissue state (surface equilibrium) ---
-    n2 = np.full(config.N_COMPARTMENTS, 0.7902 * (config.SURFACE_PRESSURE - config.PRESSURE_OTHER_GASES))
-    he = np.zeros(config.N_COMPARTMENTS)
-    bubbles = BubbleTracker()
-
-    # ── PHASE 1: Descent ──────────────────────────────────────────────────────
-    descent_time = max_depth / config.DESCENT_RATE
+    # --- Descent ---
+    descent_time  = max_depth / cfg.DESCENT_RATE
     steps_descent = max(1, int(descent_time / dt))
     for i in range(steps_descent):
-        t_elapsed = (i + 1) * dt
-        current_depth = min(max_depth, config.DESCENT_RATE * t_elapsed)
-        n2, he = load_tissues(current_depth, dt, fo2, fn2, fhe, n2, he)
-        bubbles.update_crushing(depth_to_pressure(current_depth))
+        frac  = (i + 1) / steps_descent
+        depth = frac * max_depth
+        n2, he = schreiner_load(depth, dt, fo2, fn2, fhe, n2, he)
+        max_amb = max(max_amb, depth_to_pressure(depth))
 
-    # ── PHASE 2: Bottom ───────────────────────────────────────────────────────
+    # --- Bottom ---
     steps_bottom = max(1, int(bottom_time / dt))
     for _ in range(steps_bottom):
-        n2, he = load_tissues(max_depth, dt, fo2, fn2, fhe, n2, he)
-        bubbles.update_crushing(depth_to_pressure(max_depth))
+        n2, he = schreiner_load(max_depth, dt, fo2, fn2, fhe, n2, he)
 
-    # --- Detect first supersaturation depth ---
-    # We'll find this during the ascent simulation below
-    offgas_depth = None
-    offgas_tissue = -1
+    max_amb = max(max_amb, depth_to_pressure(max_depth))
 
-    # ── PHASE 3: Ascent + Deco Stop Calculation ───────────────────────────────
-    # GF varies linearly from gf_lo at the first stop to gf_hi at surface
-    # We need to find the first stop first (two-pass approach)
+    # Compute VPM-B critical radii based on maximum pressure seen
+    r_crit = vpm_crush_radius(max_amb)
 
-    # Pass 1 — find deepest required stop (use gf_lo)
-    n2_scan, he_scan = n2.copy(), he.copy()
-    bubbles_scan = BubbleTracker()
-    bubbles_scan.r_crit = bubbles.r_crit.copy()
-    bubbles_scan.max_crushing_pressure = bubbles.max_crushing_pressure.copy()
-
-    first_stop_depth = 0.0
-    scan_depth = max_depth
-    while scan_depth > 0:
-        scan_depth = max(0.0, scan_depth - config.ASCENT_RATE * dt)
-        n2_scan, he_scan = load_tissues(scan_depth, dt, fo2, fn2, fhe, n2_scan, he_scan)
-        bhl_ceil = buhlmann_ceiling(n2_scan, he_scan, fn2, fhe, gf=gf_lo)
-        vpm_ceil = bubbles_scan.vpm_ceiling_depth(n2_scan, he_scan)
-        combined_ceil = max(bhl_ceil, vpm_ceil)
-        if combined_ceil > scan_depth and first_stop_depth == 0.0:
-            first_stop_depth = _round_up_3m(combined_ceil)
-            break
-
-    # Pass 2 — simulate ascent properly, computing stops with interpolated GF
-    deco_schedule = []
-    tissue_history = []
-
-    current_depth = max_depth
-    n2_sim, he_sim = n2.copy(), he.copy()
-    bubbles_sim = BubbleTracker()
-    bubbles_sim.r_crit = bubbles.r_crit.copy()
-    bubbles_sim.max_crushing_pressure = bubbles.max_crushing_pressure.copy()
-
-    total_time = 0.0
-    stop_depths_tried: set[float] = set()
-
-    while current_depth > 0.0:
-        # Move up one step
-        new_depth = max(0.0, current_depth - config.ASCENT_RATE * dt)
-        n2_sim, he_sim = load_tissues(new_depth, dt, fo2, fn2, fhe, n2_sim, he_sim)
-        total_time += dt
-
-        amb = depth_to_pressure(new_depth)
-        total_load = n2_sim + he_sim
-
-        # Detect off-gassing start
-        if offgas_depth is None and np.any(total_load > amb):
-            offgas_depth = new_depth
-            offgas_tissue = int(np.argmax(total_load - amb))
-
-        # Interpolated GF
-        gf = _interpolate_gf(new_depth, first_stop_depth, gf_lo, gf_hi)
-
-        # Combined ceiling
-        bhl_ceil = buhlmann_ceiling(n2_sim, he_sim, fn2, fhe, gf=gf)
-        vpm_ceil = bubbles_sim.vpm_ceiling_depth(n2_sim, he_sim)
-        combined_ceil = max(bhl_ceil, vpm_ceil)
-        stop_depth = _round_up_3m(combined_ceil)
-
-        # Record snapshot for plotting (every 0.5 min)
-        if total_time % 0.5 < dt:
-            tissue_history.append({
-                "time": round(total_time, 1),
-                "depth": round(new_depth, 1),
-                "n2": n2_sim.copy(),
-                "he": he_sim.copy(),
-                "bhl_ceil": round(bhl_ceil, 2),
-                "vpm_ceil": round(vpm_ceil, 2),
-                "r_crit_mean": float(np.mean(bubbles_sim.r_crit)) * 1e6  # μm
-            })
-
-        # Do we need a stop here?
-        if stop_depth > new_depth and stop_depth not in stop_depths_tried:
-            stop_depths_tried.add(stop_depth)
-            stop_time = 0.0
-
-            # On-gas during stop — keep adding minutes until ceiling clears
-            while True:
-                gf_stop = _interpolate_gf(stop_depth, first_stop_depth, gf_lo, gf_hi)
-                bhl_ceil_stop = buhlmann_ceiling(n2_sim, he_sim, fn2, fhe, gf=gf_stop)
-                vpm_ceil_stop = bubbles_sim.vpm_ceiling_depth(n2_sim, he_sim)
-                required_stop = max(bhl_ceil_stop, vpm_ceil_stop)
-
-                if required_stop <= stop_depth:
-                    break  # Ceiling has cleared — can ascend
-
-                # *** KEY: on-gas at stop depth (not just off-gas!) ***
-                n2_sim, he_sim = load_tissues(stop_depth, config.MIN_STOP_TIME, fo2, fn2, fhe, n2_sim, he_sim)
-                stop_time += config.MIN_STOP_TIME
-                total_time += config.MIN_STOP_TIME
-
-                # Safety valve — max 99 min per stop
-                if stop_time >= 99:
-                    break
-
-            if stop_time > 0:
-                deco_schedule.append((stop_depth, stop_time))
-            new_depth = stop_depth
-
-        current_depth = new_depth
-
-    total_deco_time = sum(t for _, t in deco_schedule)
-
-    # --- NDL calculation (no deco dive check) ---
-    ndl = None
-    if not deco_schedule:
-        ndl = _calc_ndl(max_depth, fo2, fn2, fhe, gf_hi)
-
-    return {
-        "deco_schedule": deco_schedule,
-        "tissue_history": tissue_history,
-        "offgas_depth": offgas_depth,
-        "offgas_tissue": offgas_tissue,
-        "first_stop_depth": first_stop_depth,
-        "total_deco_time": total_deco_time,
-        "ndl": ndl,
-        "bubble_tracker": bubbles_sim,
-        "n2_final": n2_sim,
-        "he_final": he_sim,
-        "fn2": fn2,
-        "fhe": fhe,
-    }
-
-
-def _round_up_3m(depth: float) -> float:
-    if depth <= 0:
-        return 0.0
-    return math.ceil(depth / 3.0) * 3.0
-
-
-def _interpolate_gf(depth: float, first_stop: float, gf_lo: float, gf_hi: float) -> float:
-    if first_stop <= 0:
-        return gf_hi
-    frac = depth / first_stop
-    return gf_lo + (gf_hi - gf_lo) * (1.0 - frac)
-
-
-def _calc_ndl(max_depth: float, fo2: float, fn2: float, fhe: float, gf_hi: float) -> float:
-    """Find no-decompression limit by binary search."""
-    n2 = np.full(config.N_COMPARTMENTS, 0.7902 * (config.SURFACE_PRESSURE - config.PRESSURE_OTHER_GASES))
-    he = np.zeros(config.N_COMPARTMENTS)
-    t = 0.0
-    while t < 300:
-        n2, he = load_tissues(max_depth, 1.0, fo2, fn2, fhe, n2, he)
-        t += 1.0
-        if buhlmann_ceiling(n2, he, fn2, fhe, gf=gf_hi) > 0:
-            return max(0.0, t - 1.0)
-    return 999.0  # Unlimited for the range tested
+    return n2, he, r_crit, max_amb
 
 
 # =============================================================================
@@ -430,45 +276,67 @@ def _calc_ndl(max_depth: float, fo2: float, fn2: float, fhe: float, gf_hi: float
 # =============================================================================
 
 st.set_page_config(
-    page_title="Deco Teaching Tool v2",
+    page_title="Deco Teaching Tool",
     page_icon="🫧",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ── Custom CSS ──────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .metric-box { background:#0f1923; border:1px solid #1e3a5f; border-radius:8px;
-                  padding:12px 16px; margin-bottom:8px; }
-    .metric-label { font-size:0.75rem; color:#5b8fb9; text-transform:uppercase;
-                    letter-spacing:0.08em; }
-    .metric-value { font-size:1.6rem; font-weight:700; color:#e0f0ff; }
-    .metric-sub   { font-size:0.72rem; color:#7a9bbf; margin-top:2px; }
-    .stop-row     { background:#0d1e2e; border-left:3px solid #1a6eb5;
-                    padding:6px 12px; margin:3px 0; border-radius:4px;
-                    font-family: monospace; color:#c8dff0; font-size:0.9rem; }
-    .stop-row.deep { border-left-color:#c0392b; }
-    .warn-box     { background:#1a1000; border:1px solid #8b6914;
-                    border-radius:6px; padding:10px 14px; margin:6px 0;
-                    color:#f0c040; font-size:0.88rem; }
-    .ok-box       { background:#001a09; border:1px solid #1a7a3a;
-                    border-radius:6px; padding:10px 14px; margin:6px 0;
-                    color:#40d080; font-size:0.88rem; }
-    .section-head { color:#5b8fb9; font-size:0.8rem; text-transform:uppercase;
-                    letter-spacing:0.1em; margin:14px 0 4px 0; }
+body { background-color: #0b1320; }
+
+.kpi-card {
+    background: #101e30;
+    border: 1px solid #1c3a5c;
+    border-radius: 10px;
+    padding: 16px 20px;
+    text-align: center;
+    margin-bottom: 4px;
+}
+.kpi-label  { font-size: 0.72rem; color: #5b8fb9; text-transform: uppercase;
+               letter-spacing: 0.1em; margin-bottom: 4px; }
+.kpi-value  { font-size: 2rem; font-weight: 700; color: #e8f4ff; line-height: 1.1; }
+.kpi-sub    { font-size: 0.72rem; color: #6a99bf; margin-top: 4px; }
+.kpi-warn   { border-color: #8b4914; }
+.kpi-ok     { border-color: #1a7a3a; }
+
+.model-row  {
+    display: flex; gap: 12px; margin-bottom: 10px;
+}
+.model-card {
+    flex: 1;
+    background: #0d1b2a;
+    border-radius: 8px;
+    border-left: 4px solid #1a6eb5;
+    padding: 12px 16px;
+}
+.model-card.vpm { border-left-color: #b56a1a; }
+.model-title { font-size: 0.75rem; color: #5b8fb9; text-transform: uppercase;
+               letter-spacing: 0.08em; margin-bottom: 6px; }
+.model-depth { font-size: 1.5rem; font-weight: 700; color: #e0f0ff; }
+.model-meta  { font-size: 0.72rem; color: #7a9bbf; margin-top: 4px; }
+
+.concept-box {
+    background: #0d1e2e;
+    border: 1px solid #1c3a5c;
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin: 8px 0;
+    font-size: 0.88rem;
+    color: #c0d8f0;
+    line-height: 1.6;
+}
+.concept-box h4 { color: #7ab8e0; margin: 0 0 6px 0; font-size: 0.9rem; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🫧 Decompression Physics Teaching Tool v2")
-st.caption("ZHL-16C · VPM-B Bubble Nucleation · Continuous On-gassing · Gradient Factors")
-
-# ── Sidebar ──────────────────────────────────────────────────────────────────
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("⚙️ Dive Profile")
 
     fo2 = st.slider("Oxygen (%)", 5, 100, 21) / 100.0
-    fhe = st.slider("Helium (%)", 0, 95, 35) / 100.0
+    fhe = st.slider("Helium (%)",  0,  95, 35) / 100.0
     fn2 = round(1.0 - fo2 - fhe, 6)
 
     if fn2 < -0.001:
@@ -476,358 +344,381 @@ with st.sidebar:
         st.stop()
     fn2 = max(fn2, 0.0)
 
-    col_a, col_b, col_c = st.columns(3)
-    col_a.metric("O₂", f"{fo2*100:.0f}%")
-    col_b.metric("He", f"{fhe*100:.0f}%")
-    col_c.metric("N₂", f"{fn2*100:.0f}%")
+    ca, cb, cc = st.columns(3)
+    ca.metric("O₂", f"{fo2*100:.0f}%")
+    cb.metric("He", f"{fhe*100:.0f}%")
+    cc.metric("N₂", f"{fn2*100:.0f}%")
 
     st.divider()
-    max_depth    = st.number_input("Max Depth (m)", 1.0, 330.0, 40.0, 1.0)
-    bottom_time  = st.number_input("Bottom Time (min)", 1.0, 480.0, 35.0, 1.0)
+    max_depth   = st.number_input("Max Depth (m)",       1.0, 330.0,  40.0, 1.0)
+    bottom_time = st.number_input("Bottom Time (min)",   1.0, 480.0,  35.0, 1.0)
 
     st.divider()
-    st.subheader("Gradient Factors")
-    gf_lo = st.slider("GF Low (deep stop conservatism)", 0.10, 1.00, 0.35, 0.05)
-    gf_hi = st.slider("GF High (surface conservatism)",  0.10, 1.00, 0.85, 0.05)
-    if gf_lo > gf_hi:
-        st.warning("GF Low should be ≤ GF High")
-
-    with st.expander("ℹ️ GF Explanation"):
-        st.markdown("""
-**Gradient Factors** (Baker 1998) scale the Bühlmann M-value:
-
-- **GF Low** = fraction of M-value headroom used at the *deepest* stop.
-  Smaller → more conservative deep stops (VPM-like behaviour).
-
-- **GF High** = fraction used at the *surface*.
-  Smaller → more conservative shallow stops.
-
-A pair like **35/85** gives deep stops and a conservative surface
-approach, mimicking VPM-B behaviour within the Bühlmann framework.
-        """)
+    gf = st.slider(
+        "Bühlmann GF (conservatism)",
+        min_value=0.50, max_value=1.00, value=1.00, step=0.05,
+        help="1.0 = pure M-value limit. 0.80 = use only 80% of the headroom (more conservative)."
+    )
 
     st.divider()
-    run_btn = st.button("🔄 Calculate Dive", use_container_width=True, type="primary")
+    calc_btn = st.button("🔄 Calculate", use_container_width=True, type="primary")
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# ── Calculation ───────────────────────────────────────────────────────────────
+if calc_btn or "result" not in st.session_state:
+    n2, he, r_crit, max_amb = simulate_bottom(max_depth, bottom_time, fo2, fn2, fhe)
 
-if run_btn or "sim" not in st.session_state:
-    with st.spinner("Simulating full dive profile…"):
-        st.session_state["sim"] = run_full_simulation(
-            max_depth, bottom_time, fo2, fn2, fhe, gf_lo, gf_hi
-        )
+    offgas_depth,  offgas_idx  = offgas_start_depth(n2, he)
+    bhl_ceil,      bhl_idx     = buhlmann_ceiling_depth(n2, he, fn2, fhe, gf=gf)
+    vpm_ceil,      vpm_idx     = vpm_ceiling_depth(n2, he, r_crit)
 
-sim = st.session_state["sim"]
-deco    = sim["deco_schedule"]
-history = sim["tissue_history"]
+    # Practical 3 m rounded values
+    offgas_3m = round_up_3m(offgas_depth)
+    bhl_3m    = round_up_3m(bhl_ceil)
+    vpm_3m    = round_up_3m(vpm_ceil)
 
-# ── Top KPIs ─────────────────────────────────────────────────────────────────
-k1, k2, k3, k4, k5 = st.columns(5)
+    # Safety margin: gap between off-gassing start and ceiling
+    margin_bhl = max(0.0, offgas_depth - bhl_ceil)
+    margin_vpm = max(0.0, offgas_depth - vpm_ceil)
+
+    st.session_state["result"] = dict(
+        n2=n2, he=he, r_crit=r_crit, max_amb=max_amb,
+        offgas_depth=offgas_depth, offgas_idx=offgas_idx,
+        bhl_ceil=bhl_ceil, bhl_idx=bhl_idx,
+        vpm_ceil=vpm_ceil, vpm_idx=vpm_idx,
+        offgas_3m=offgas_3m, bhl_3m=bhl_3m, vpm_3m=vpm_3m,
+        margin_bhl=margin_bhl, margin_vpm=margin_vpm,
+        gf=gf, fn2=fn2, fhe=fhe,
+    )
+
+r = st.session_state["result"]
+
+# ── Title ─────────────────────────────────────────────────────────────────────
+st.title("🫧 Decompression Teaching Tool")
+st.caption("Focused on two concepts only: **Off-gassing Start Depth** and **Ceiling Depth** "
+           "— calculated from Bühlmann ZHL-16C and VPM-B independently.")
+
+st.divider()
+
+# ── KPI Row ───────────────────────────────────────────────────────────────────
+k1, k2, k3 = st.columns(3)
 
 with k1:
-    st.markdown('<div class="metric-box">'
-        '<div class="metric-label">Off-gas Start</div>'
-        f'<div class="metric-value">{sim["offgas_depth"]:.1f} m</div>'
-        f'<div class="metric-sub">Tissue {sim["offgas_tissue"]+1 if sim["offgas_tissue"]>=0 else "—"}</div>'
-        '</div>', unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class="kpi-card">
+      <div class="kpi-label">Off-gassing Start</div>
+      <div class="kpi-value">{r['offgas_depth']:.1f} m</div>
+      <div class="kpi-sub">
+        Practical (3 m increment): <strong>{r['offgas_3m']:.0f} m</strong><br>
+        Leading tissue: T{r['offgas_idx']+1} 
+        (ht&nbsp;{cfg.HALF_TIMES_N2[r['offgas_idx']]:.0f} min N₂)
+      </div>
+    </div>""", unsafe_allow_html=True)
 
 with k2:
-    first_stop = deco[0][0] if deco else 0
-    st.markdown('<div class="metric-box">'
-        '<div class="metric-label">First Stop</div>'
-        f'<div class="metric-value">{first_stop:.0f} m</div>'
-        f'<div class="metric-sub">Deepest deco stop</div>'
-        '</div>', unsafe_allow_html=True)
+    card_cls = "kpi-card kpi-warn" if r['bhl_ceil'] > 0 else "kpi-card kpi-ok"
+    st.markdown(f"""
+    <div class="{card_cls}">
+      <div class="kpi-label">Bühlmann Ceiling (GF {r['gf']:.2f})</div>
+      <div class="kpi-value">{r['bhl_ceil']:.1f} m</div>
+      <div class="kpi-sub">
+        Practical: <strong>{r['bhl_3m']:.0f} m</strong> &nbsp;|&nbsp;
+        Margin: {r['margin_bhl']:.1f} m<br>
+        Leading tissue: T{r['bhl_idx']+1}
+        (ht&nbsp;{cfg.HALF_TIMES_N2[r['bhl_idx']]:.0f} min N₂)
+      </div>
+    </div>""", unsafe_allow_html=True)
 
 with k3:
-    total_deco = sim["total_deco_time"]
-    st.markdown('<div class="metric-box">'
-        '<div class="metric-label">Total Deco Time</div>'
-        f'<div class="metric-value">{total_deco:.0f} min</div>'
-        f'<div class="metric-sub">{"No deco required" if total_deco == 0 else f"{len(deco)} stops"}</div>'
-        '</div>', unsafe_allow_html=True)
-
-with k4:
-    ndl_val = sim["ndl"]
-    st.markdown('<div class="metric-box">'
-        '<div class="metric-label">NDL</div>'
-        f'<div class="metric-value">{"N/A" if ndl_val is None else (f"{ndl_val:.0f} min" if ndl_val < 999 else "∞")}</div>'
-        f'<div class="metric-sub">No-deco limit at {max_depth:.0f}m</div>'
-        '</div>', unsafe_allow_html=True)
-
-with k5:
-    r_mean = sim["bubble_tracker"].r_crit.mean() * 1e6
-    st.markdown('<div class="metric-box">'
-        '<div class="metric-label">Mean r_crit</div>'
-        f'<div class="metric-value">{r_mean:.3f} μm</div>'
-        f'<div class="metric-sub">Post-dive bubble nucleus radius</div>'
-        '</div>', unsafe_allow_html=True)
+    card_cls = "kpi-card kpi-warn" if r['vpm_ceil'] > 0 else "kpi-card kpi-ok"
+    st.markdown(f"""
+    <div class="{card_cls}">
+      <div class="kpi-label">VPM-B Ceiling</div>
+      <div class="kpi-value">{r['vpm_ceil']:.1f} m</div>
+      <div class="kpi-sub">
+        Practical: <strong>{r['vpm_3m']:.0f} m</strong> &nbsp;|&nbsp;
+        Margin: {r['margin_vpm']:.1f} m<br>
+        Leading tissue: T{r['vpm_idx']+1}
+        (ht&nbsp;{cfg.HALF_TIMES_N2[r['vpm_idx']]:.0f} min N₂)
+      </div>
+    </div>""", unsafe_allow_html=True)
 
 st.divider()
 
-# ── Tabs ─────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📋 Deco Schedule",
+# ── Depth Zone Diagram ────────────────────────────────────────────────────────
+st.subheader("Depth Zone Diagram")
+
+zone_df = pd.DataFrame({
+    "Zone": [
+        "Surface",
+        f"Bühlmann Ceiling ({r['bhl_ceil']:.1f} m)",
+        f"VPM-B Ceiling ({r['vpm_ceil']:.1f} m)",
+        f"Off-gassing Start ({r['offgas_depth']:.1f} m)",
+        f"Bottom ({max_depth:.0f} m)",
+    ],
+    "Depth (m)": [
+        0.0,
+        r['bhl_ceil'],
+        r['vpm_ceil'],
+        r['offgas_depth'],
+        max_depth,
+    ]
+})
+st.bar_chart(zone_df, x="Zone", y="Depth (m)", horizontal=True, height=280)
+
+st.caption(
+    "**Off-gassing Start** is where tissues first become supersaturated relative to ambient. "
+    "**Ceilings** are the depths above which tissue pressures exceed tolerated limits (Bühlmann M-value "
+    "or VPM-B bubble nucleation threshold). The gap between them is the safe ascent window."
+)
+
+st.divider()
+
+# ── Tabs ──────────────────────────────────────────────────────────────────────
+tab1, tab2, tab3 = st.tabs([
     "🫁 Tissue Loading",
-    "🔬 Bubble Nucleation (VPM-B)",
-    "📖 Physics Explainer"
+    "🔬 VPM-B Bubble State",
+    "📖 Physics Explainer",
 ])
 
-# ─────────────────────── TAB 1: Deco Schedule ────────────────────────────────
+# ─── Tab 1: Tissue Loading ────────────────────────────────────────────────────
 with tab1:
-    if not deco:
-        st.markdown('<div class="ok-box">✅ <strong>No Decompression Required</strong><br>'
-            f'NDL at {max_depth:.0f}m with this mix: '
-            f'{"unlimited" if sim["ndl"] and sim["ndl"] >= 999 else f"{sim["ndl"]:.0f} min"}'
-            '</div>', unsafe_allow_html=True)
-    else:
-        st.markdown(f'<div class="warn-box">⚠️ '
-            f'<strong>Decompression Required — {len(deco)} stops, {total_deco:.0f} min total</strong>'
-            '</div>', unsafe_allow_html=True)
+    n2, he = r["n2"], r["he"]
+    fn2_, fhe_ = r["fn2"], r["fhe"]
+    a, b = cfg.mixed_ab(fn2_, fhe_)
 
-        # Table
-        rows = []
-        for depth, time in sorted(deco, reverse=True):
-            rows.append({
-                "Stop Depth (m)": f"{depth:.0f}",
-                "Stop Time (min)": f"{time:.0f}",
-                "Pressure (bar)": f"{depth_to_pressure(depth):.2f}",
-                "GF at Stop": f"{_interpolate_gf(depth, sim['first_stop_depth'], gf_lo, gf_hi):.2f}"
-            })
-        df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+    total = n2 + he
 
-        st.markdown("##### Stop-by-Stop HTML View")
-        for depth, time in sorted(deco, reverse=True):
-            css_class = "stop-row deep" if depth >= 15 else "stop-row"
-            st.markdown(
-                f'<div class="{css_class}">⬢ {depth:.0f} m — {time:.0f} min '
-                f'(GF {_interpolate_gf(depth, sim["first_stop_depth"], gf_lo, gf_hi):.2f})</div>',
-                unsafe_allow_html=True
-            )
+    # M-value at the current ceiling depth (Bühlmann)
+    p_ceil_abs = cfg.SURFACE_PRESSURE + r["bhl_ceil"] * cfg.BAR_PER_METER
+    # M-value at surface (GF=1) for reference
+    mv_surface = a + cfg.SURFACE_PRESSURE / b
+
+    # Supersaturation relative to surface M-value
+    sat_pct = np.clip(total / mv_surface * 100, 0, 200)
+
+    # Per-compartment Bühlmann ceiling
+    p_comp_ceil = np.maximum((total - a * r["gf"]) * b, 0.0)
+    comp_ceil_depth = np.array([pressure_to_depth(p + cfg.SURFACE_PRESSURE) for p in p_comp_ceil])
+
+    # Per-compartment VPM allowable supersaturation
+    vpm_allow = vpm_allowable_supersaturation(r["r_crit"])
+
+    tissue_df = pd.DataFrame({
+        "Tissue":             [f"T{i+1}" for i in range(cfg.N_COMPARTMENTS)],
+        "N₂ Half-time (min)": cfg.HALF_TIMES_N2,
+        "He Half-time (min)": cfg.HALF_TIMES_HE,
+        "N₂ Load (bar)":      np.round(n2, 4),
+        "He Load (bar)":      np.round(he, 4),
+        "Total Inert (bar)":  np.round(total, 4),
+        "M-val Limit @ surf (bar)": np.round(mv_surface, 4),
+        "Saturation %":       np.round(sat_pct, 1),
+        "Bühlmann Ceil Depth (m)":  np.round(comp_ceil_depth, 2),
+        "VPM Allow ΔP (bar)":       np.round(vpm_allow, 4),
+    })
+
+    st.dataframe(tissue_df, use_container_width=True, hide_index=True)
 
     st.divider()
-    st.subheader("Key Depths Summary")
-    depth_data = {
-        "Event": ["Bottom", "Off-gassing Starts", "First Deco Stop", "Surface"],
-        "Depth (m)": [
-            max_depth,
-            round(sim["offgas_depth"] or 0, 1),
-            first_stop,
-            0
-        ]
-    }
-    st.bar_chart(pd.DataFrame(depth_data), x="Event", y="Depth (m)", horizontal=True)
+    st.subheader("Total Inert Load vs Bühlmann M-value Limit (surface)")
 
-# ─────────────────────── TAB 2: Tissue Loading ───────────────────────────────
+    chart_df = pd.DataFrame({
+        "Tissue":               [f"T{i+1}" for i in range(cfg.N_COMPARTMENTS)],
+        "Total Inert Gas (bar)": np.round(total, 4),
+        "M-value Limit (bar)":   np.round(mv_surface, 4),
+    })
+    st.bar_chart(chart_df, x="Tissue", y=["Total Inert Gas (bar)", "M-value Limit (bar)"])
+    st.caption(
+        "Bars above the M-value limit indicate tissues that require depth to stay in solution. "
+        "The most violated compartment drives the ceiling."
+    )
+
+    st.divider()
+    st.subheader("Per-Compartment Bühlmann Ceiling Depth")
+
+    ceil_df = pd.DataFrame({
+        "Tissue":              [f"T{i+1}" for i in range(cfg.N_COMPARTMENTS)],
+        "Ceiling Depth (m)":   np.round(comp_ceil_depth, 2),
+    })
+    st.bar_chart(ceil_df, x="Tissue", y="Ceiling Depth (m)")
+    st.caption(
+        "Each bar shows the minimum depth (m) that compartment requires. "
+        f"The overall Bühlmann ceiling is the maximum: **{r['bhl_ceil']:.1f} m** (T{r['bhl_idx']+1})."
+    )
+
+
+# ─── Tab 2: VPM-B Bubble State ───────────────────────────────────────────────
 with tab2:
-    if not history:
-        st.info("No ascent data to display.")
-    else:
-        st.subheader("Ceiling vs Time During Ascent")
-        hist_df = pd.DataFrame([{
-            "Time (min)": h["time"],
-            "Depth (m)": h["depth"],
-            "Bühlmann Ceiling (m)": h["bhl_ceil"],
-            "VPM-B Ceiling (m)": h["vpm_ceil"],
-        } for h in history])
-        st.line_chart(hist_df, x="Time (min)", y=["Depth (m)", "Bühlmann Ceiling (m)", "VPM-B Ceiling (m)"])
-        st.caption("Depth shows where the diver is; ceilings show the minimum safe depth per model.")
+    st.subheader("VPM-B: Bubble Nucleus State After Bottom Phase")
 
-        st.divider()
-        st.subheader("Final Tissue Loading (After Dive)")
-        n2_f  = sim["n2_final"]
-        he_f  = sim["he_final"]
-        total = n2_f + he_f
-        a, b  = config.mixed_a_b(fn2, fhe)
-        # M-value at surface
-        mv_surface = a + config.SURFACE_PRESSURE / b
+    r_crit  = r["r_crit"]
+    r_init  = np.full(cfg.N_COMPARTMENTS, cfg.R_INITIAL)
+    delta_p_allow = vpm_allowable_supersaturation(r_crit)
 
-        tissue_df = pd.DataFrame({
-            "Tissue": [f"T{i+1}" for i in range(16)],
-            "Half-time N₂ (min)": config.HALF_TIMES_N2,
-            "N₂ Load (bar)": np.round(n2_f, 3),
-            "He Load (bar)": np.round(he_f, 3),
-            "Total Inert (bar)": np.round(total, 3),
-            "M-value Limit (bar)": np.round(mv_surface, 3),
-            "Saturation %": np.round(total / mv_surface * 100, 1),
-        })
-        st.dataframe(tissue_df, use_container_width=True, hide_index=True)
+    # Per-compartment VPM ceiling
+    pt = r["n2"] + r["he"]
+    p_min_vpm = np.maximum(pt - delta_p_allow, 0.0)
+    vpm_comp_depths = np.array([pressure_to_depth(p + cfg.SURFACE_PRESSURE) for p in p_min_vpm])
 
-        st.divider()
-        st.subheader("Saturation vs M-value Limit (Final)")
-        chart_df = pd.DataFrame({
-            "Tissue": [f"T{i+1}" for i in range(16)],
-            "Inert Gas Load": np.round(total, 3),
-            "M-value Limit": np.round(mv_surface, 3),
-        })
-        st.bar_chart(chart_df, x="Tissue", y=["Inert Gas Load", "M-value Limit"])
+    crush_delta = max_depth * cfg.BAR_PER_METER   # bar over surface
+    r_crit_scalar = float(r_crit[0])              # same for all compartments
 
-# ─────────────────────── TAB 3: VPM-B Bubble Nucleation ─────────────────────
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Initial r₀", f"{cfg.R_INITIAL*1e6:.3f} μm")
+    col2.metric("r_crit after dive", f"{r_crit_scalar*1e6:.4f} μm",
+                delta=f"{(r_crit_scalar - cfg.R_INITIAL)*1e6:.4f} μm",
+                delta_color="normal")
+    col3.metric("Allowable ΔP (bar)", f"{delta_p_allow[0]:.4f}")
+
+    st.caption(
+        f"Crush overpressure at {max_depth:.0f} m: **{crush_delta:.3f} bar**. "
+        f"Nuclei compressed from {cfg.R_INITIAL*1e6:.3f} μm → {r_crit_scalar*1e6:.4f} μm. "
+        f"Smaller radius = harder to nucleate = higher allowable supersaturation."
+    )
+
+    st.divider()
+
+    vpm_df = pd.DataFrame({
+        "Tissue":                     [f"T{i+1}" for i in range(cfg.N_COMPARTMENTS)],
+        "Total Inert (bar)":           np.round(pt, 4),
+        "Allowable ΔP (bar)":          np.round(delta_p_allow, 4),
+        "VPM Ceiling Depth (m)":       np.round(vpm_comp_depths, 2),
+    })
+    st.dataframe(vpm_df, use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.subheader("Per-Compartment VPM-B Ceiling Depth")
+
+    vpm_ceil_df = pd.DataFrame({
+        "Tissue":             [f"T{i+1}" for i in range(cfg.N_COMPARTMENTS)],
+        "VPM Ceiling (m)":    np.round(vpm_comp_depths, 2),
+    })
+    st.bar_chart(vpm_ceil_df, x="Tissue", y="VPM Ceiling (m)")
+    st.caption(
+        "Each bar is the depth required by the VPM-B bubble criterion for that compartment. "
+        f"Overall VPM-B ceiling: **{r['vpm_ceil']:.1f} m** (T{r['vpm_idx']+1})."
+    )
+
+    st.divider()
+    st.subheader("Total Inert Load vs VPM-B Allowable Supersaturation")
+
+    allow_chart = pd.DataFrame({
+        "Tissue":              [f"T{i+1}" for i in range(cfg.N_COMPARTMENTS)],
+        "Total Inert (bar)":   np.round(pt, 4),
+        "Allowable ΔP (bar)":  np.round(delta_p_allow, 4),
+    })
+    st.bar_chart(allow_chart, x="Tissue", y=["Total Inert (bar)", "Allowable ΔP (bar)"])
+    st.caption(
+        "Where 'Total Inert' exceeds 'Allowable ΔP', those compartments would nucleate "
+        "bubbles if the diver were at the surface."
+    )
+
+
+# ─── Tab 3: Physics Explainer ─────────────────────────────────────────────────
 with tab3:
-    st.subheader("🔬 VPM-B: Bubble Nucleus Radius (r_crit) per Compartment")
+    st.subheader("📖 What This Tool Calculates and Why")
 
-    r_crits  = sim["bubble_tracker"].r_crit * 1e6  # μm
-    r_init   = np.full(16, config.R_INITIAL * 1e6)
-    crush_dp = sim["bubble_tracker"].max_crushing_pressure
-
-    bubble_df = pd.DataFrame({
-        "Tissue": [f"T{i+1}" for i in range(16)],
-        "r_crit after dive (μm)": np.round(r_crits, 4),
-        "Initial r₀ (μm)": np.round(r_init, 4),
-        "Max crushing ΔP (bar)": np.round(crush_dp, 3),
-        "Allowable supersaturation (bar)": np.round(sim["bubble_tracker"].allowable_supersaturation(), 3),
-    })
-    st.dataframe(bubble_df, use_container_width=True, hide_index=True)
-
-    st.divider()
-    st.subheader("r_crit vs Initial r₀ by Compartment")
-    r_chart = pd.DataFrame({
-        "Tissue": [f"T{i+1}" for i in range(16)],
-        "r_crit post-dive (μm)": np.round(r_crits, 4),
-        "r₀ initial (μm)": np.round(r_init, 4),
-    })
-    st.bar_chart(r_chart, x="Tissue", y=["r_crit post-dive (μm)", "r₀ initial (μm)"])
-    st.caption(
-        "When r_crit < r₀, the dive has 'crushed' the nuclei — "
-        "higher pressures during the dive make bubbles harder to grow on the next dive. "
-        "This is the physical basis for surface interval tables."
-    )
-
-    st.divider()
-    st.subheader("Allowable Supersaturation per Compartment")
-    allow_df = pd.DataFrame({
-        "Tissue": [f"T{i+1}" for i in range(16)],
-        "Allowable ΔP (bar)": np.round(sim["bubble_tracker"].allowable_supersaturation(), 3),
-    })
-    st.bar_chart(allow_df, x="Tissue", y="Allowable ΔP (bar)")
-    st.caption(
-        "Lower r_crit → higher allowable supersaturation (Young-Laplace: ΔP = 2γ/r). "
-        "Fast tissues (T1–T4) have small r_crit after deep dives → higher protection against bubbles."
-    )
-
-    if history:
-        st.divider()
-        st.subheader("Mean r_crit During Ascent")
-        r_hist = pd.DataFrame([{
-            "Time (min)": h["time"],
-            "Mean r_crit (μm)": h["r_crit_mean"]
-        } for h in history])
-        st.line_chart(r_hist, x="Time (min)", y="Mean r_crit (μm)")
-        st.caption("Radius decreases as the diver ascends and nuclei are less compressed.")
-
-# ─────────────────────── TAB 4: Physics Explainer ────────────────────────────
-with tab4:
-    st.subheader("📖 Physics Concepts in This Tool")
-
-    with st.expander("1. Haldane Exponential Loading (Schreiner Equation)", expanded=False):
+    with st.expander("1 — Off-gassing Start Depth", expanded=True):
         st.markdown(r"""
-The fundamental equation governing inert gas exchange in each tissue compartment:
+**Definition**: The depth at which the most-loaded tissue compartment first has a partial
+pressure of inert gas **greater than the ambient pressure**.
 
-$$P_t(t) = P_{insp} + (P_{t,0} - P_{insp}) \cdot e^{-k \cdot t}$$
+At this point, the gradient reverses: gas starts moving *out of* tissue into blood and lungs.
+Above this depth, you are off-gassing. Below it, you are still on-gassing.
 
+$$P_{tissue} > P_{ambient} \implies \text{off-gassing}$$
+
+Per compartment, the off-gassing starts at depth:
+
+$$d_{offgas,i} = \frac{P_{t,i} - P_{surface}}{0.09985 \text{ bar/m}}$$
+
+The **overall off-gassing start depth** is the maximum across all 16 compartments — it tells
+you the deepest point at which any tissue begins to release gas.
+
+> **Teaching point**: Off-gassing *starting* doesn't mean it is safe. The rate of release
+> matters. If you ascend too quickly above the ceiling, the release becomes uncontrolled → bubbles.
+        """)
+
+    with st.expander("2 — Bühlmann ZHL-16C Ceiling", expanded=True):
+        st.markdown(r"""
+**Bühlmann M-value**: Each compartment has a maximum tolerated inert gas pressure that
+depends linearly on ambient pressure:
+
+$$M = \frac{P_{amb}}{b} + a$$
+
+Rearranged to find the **minimum safe ambient pressure** (ceiling):
+
+$$P_{ceil} = (P_{tissue} - a \cdot GF) \cdot b$$
+
+where:
 | Symbol | Meaning |
 |--------|---------|
-| $P_t(t)$ | Tissue pressure at time $t$ |
-| $P_{insp}$ | Inspired partial pressure of gas |
-| $P_{t,0}$ | Initial tissue pressure |
-| $k = \ln 2 / t_{1/2}$ | Rate constant from half-time |
+| $a$ | Y-intercept coefficient — controls max supersaturation at surface |
+| $b$ | Slope coefficient — controls how limit grows with depth |
+| $GF$ | Gradient Factor (0–1) — scales conservatism; 1.0 = exact M-value |
 
-**Key insight**: This works for **both** on-gassing (ascending inspired pp) and off-gassing
-(descending inspired pp) — the direction is automatic. Most simplified tools only apply it
-at the bottom. This simulation applies it **at every 6-second step including during deco stops**,
-so on-gassing is correctly modelled when you hold at a stop.
+For **Trimix**, $a$ and $b$ are He-fraction weighted:
+$$a_{mix} = \frac{a_{N_2} \cdot f_{N_2} + a_{He} \cdot f_{He}}{f_{N_2} + f_{He}}$$
+
+The ceiling depth is:
+$$d_{ceil,Bhl} = \max_i \left[\frac{P_{ceil,i} - P_{surface}}{0.09985}\right]$$
+
+> **Teaching point**: The Bühlmann model does not care about bubble *size* — only whether
+> supersaturation exceeds the empirically derived M-value line. GF is a pragmatic fudge factor
+> to add headroom that M-values alone don't provide.
         """)
 
-    with st.expander("2. Bühlmann ZHL-16C M-Values (a, b Coefficients)", expanded=False):
+    with st.expander("3 — VPM-B Ceiling (Bubble Nucleation)", expanded=True):
         st.markdown(r"""
-Each tissue has a **maximum tolerated ambient pressure** (M-value line):
+**VPM = Varying Permeability Model** (Yount 1979, Yount & Hoffman 1986).
 
-$$M = \frac{P_t}{b} + a$$
+Bubble nuclei are stabilised by a surfactant skin with surface tension $\gamma_c$.
+A nucleus of radius $r$ is in equilibrium when:
 
-Or rearranged: the minimum safe ambient pressure for a tissue at loading $P_t$ is:
+$$\Delta P_{allow} = \frac{2\gamma_c}{r}$$
 
-$$P_{amb,min} = (P_t - a \cdot GF) \cdot b$$
+**Crushing effect**: Descent to depth $d$ imposes overpressure $\Delta P_{crush}$,
+which compresses nuclei from initial radius $r_0$ to a smaller $r_{crit}$:
 
-| Coefficient | Fast tissues (T1) | Slow tissues (T16) | Effect |
-|------------|------------|------------|--------|
-| $a$ (bar) | 1.26 | 0.23 | Higher → more conservative at surface |
-| $b$ | 0.505 | 0.965 | Lower → more conservative at depth |
+$$r_{crit} = \frac{2\gamma_c \cdot r_0}{2\gamma_c + \lambda \cdot \Delta P_{crush}}$$
 
-**ZHL-16C** differs from earlier versions in two ways:
-1. Slightly adjusted coefficients validated against more experimental data.
-2. For Trimix, `a` and `b` are **helium-weighted interpolated** before computing ceiling.
+Smaller $r_{crit}$ → larger $\Delta P_{allow}$ → nuclei are **harder to grow** (protective crushing).
 
-**vs. previous tool**: Previous version used an approximation. This tool uses the
-exact published ZHL-16C table coefficients.
+**VPM-B ceiling per compartment**:
+$$P_{min,i} = P_{t,i} - \Delta P_{allow}$$
+$$d_{ceil,VPM} = \max_i \left[\frac{P_{min,i} - P_{surface}}{0.09985}\right]$$
+
+> **Teaching point**: VPM-B explicitly models bubble *physics*, so it naturally produces
+> deeper first stops than Bühlmann (the crushing effect means you need more ambient pressure
+> to keep small nuclei stable). It's history-dependent — previous dives change $r_{crit}$.
+
+| Parameter | Value used |
+|-----------|-----------|
+| $\gamma_c$ | 0.0179 N/m |
+| $r_0$ | 0.8 μm |
+| $\lambda$ | 7500 Pa·m/N (converted) |
         """)
 
-    with st.expander("3. Gradient Factors (GF) — Baker 1998", expanded=False):
+    with st.expander("4 — Why the Two Models Give Different Ceilings", expanded=False):
         st.markdown(r"""
-GFs scale the M-value headroom to add conservatism:
+**Bühlmann** is empirical: the $a$ and $b$ coefficients were derived from experimental
+dives and decompression sickness outcome data. It asks: *"Have any known-safe limits been exceeded?"*
 
-$$P_{tol} = (P_t - a \cdot GF) \cdot b$$
+**VPM-B** is mechanistic: it models the physical stability of bubble nuclei using
+Young-Laplace surface tension equations. It asks: *"Would the pressure differential
+cause a gas nucleus to grow into a bubble?"*
 
-GF interpolates **linearly** between the deepest stop and the surface:
+In practice:
+- VPM-B tends to produce **deeper first stops** (bubble nucleation argument)
+- Bühlmann (with GF < 1) can produce **similar deep stops** but via a different mechanism
+- For shallow recreational profiles, the two often agree
+- For deep trimix dives, VPM-B's crushing effect becomes significant and diverges from Bühlmann
 
-$$GF(d) = GF_{Lo} + (GF_{Hi} - GF_{Lo}) \cdot \left(1 - \frac{d}{d_{first\,stop}}\right)$$
-
-This mimics VPM-B's behaviour: more conservative at deep stops, 
-allows faster ascent at shallow depths. Popular pairs:
-
-| Profile | GF Lo / Hi | Character |
-|---------|-----------|-----------|
-| Conservative | 20/70 | Deep stops, long deco |
-| Standard | 35/85 | Balanced deep + shallow |
-| Aggressive | 50/95 | Minimal stops |
-        """)
-
-    with st.expander("4. VPM-B Bubble Nucleation & Critical Radius", expanded=False):
-        st.markdown(r"""
-**VPM = Varying Permeability Model** (Yount 1979, Hoffman 1985).
-
-A bubble nucleus is in equilibrium when the **Laplace pressure** equals the 
-net gas pressure differential:
-
-$$\Delta P = \frac{2\gamma}{r}$$
-
-| Symbol | Meaning |
-|--------|---------|
-| $\gamma$ | Surface tension of nucleus membrane (≈ 0.0179 N/m) |
-| $r$ | Critical radius of nucleus |
-| $\Delta P$ | Allowable supersaturation before bubble grows |
-
-**Crushing effect**: During deep dives, high ambient pressure *crushes* nuclei,
-reducing $r_{crit}$. By Young-Laplace, smaller $r$ → **larger** $\Delta P$ required
-to grow a bubble. So a deeper dive is paradoxically *harder* to cause bubble growth
-on ascent — but only if you ascended correctly on the previous dive.
-
-$$r_{crit} = \frac{2\gamma_c \cdot r_0}{2\gamma_c + \lambda \cdot P_{crush}}$$
-
-The **surface interval** allows $r_{crit}$ to relax back toward $r_0$, reducing
-the protection from crushing — which is why short surface intervals increase risk.
-        """)
-
-    with st.expander("5. On-Gassing at Deco Stops", expanded=False):
-        st.markdown(r"""
-**The counter-diffusion problem**: At a deco stop, you are ascending into an
-environment where inspired $P_{N_2}$ is *lower* than tissue $P_{N_2}$ → off-gassing. ✅
-
-But **fast tissues** (short half-times) may already be near equilibrium at the
-stop depth, while **slow tissues** continue on-gassing from the bottom exposure.
-
-Previous simplified models computed tissue loading only at the bottom and then
-simulated pure off-gassing. **This tool** applies the Schreiner equation at every
-time step during stops, so:
-
-- Slow tissues may continue to take on N₂/He at shallow stops
-- The ceiling calculation at each stop iteration reflects the *true* tissue state
-- Stop time extends until the updated loading clears the ceiling
-
-This is especially important for **Trimix** because He off-gasses very rapidly
-(fast half-times) but N₂ may still be loading slowly in compartments T12–T16.
+Neither model includes a scheduling algorithm in this tool — ceilings are shown as
+instantaneous snapshots at the end of the bottom phase.
         """)
 
 st.divider()
-st.caption("🫧 Decompression Teaching Tool v2 | ZHL-16C + VPM-B | For educational use only. "
-           "Never plan actual dives using this tool.")
+st.caption(
+    "🫧 Decompression Teaching Tool v3 · ZHL-16C + VPM-B · "
+    "Off-gassing depth and ceiling only — no deco scheduling · Educational use only"
+)
