@@ -159,14 +159,16 @@ def buhlmann_ceiling(n2, he):
     a, b = mixed_ab(n2, he)
     pt = n2 + he
 
-    # Minimum tolerable ambient pressure per compartment
-    p_min = (pt - a) * b                   # bar
-    p_min = np.maximum(p_min, 0.0)         # clip — below zero means safe at surface
+    # Minimum tolerable ambient pressure per compartment (bar, absolute)
+    # M-value line: P_tol = a + P_amb/b  →  P_amb_min = (P_tissue - a) * b
+    p_min = (pt - a) * b                        # bar absolute
+    p_min_clipped = np.maximum(p_min, 0.0)      # < 0 means safe at surface
 
-    leading = int(np.argmax(p_min))
-    ceiling  = float(p2depth(p_min[leading] + P_SURF))
+    leading = int(np.argmax(p_min_clipped))
+    # p_min is absolute pressure → depth = (p_min - P_SURF) / BAR_PER_M
+    ceiling = float(p2depth(p_min_clipped[leading]))
 
-    return ceiling, leading, p_min
+    return ceiling, leading, p_min_clipped
 
 # =============================================================================
 # VPM-B  OFF-GASSING START DEPTH
@@ -437,16 +439,11 @@ with tab1:
         "M-val @ surface (bar)": np.round(mv_surf, 4),
         "Saturation %":          np.round(sat, 1),
         "Supersaturated?":       ["YES ⚠️" if s else "no" for s in super_at_surf],
-        "Bhl ceil depth (m)":    np.round(res["ceil_per_comp"] / BAR_PER_M, 2),
     })
-    # Bhl ceil depth from p_min already stored in bar; convert properly
-    p_min = res["ceil_per_comp"]   # bar above P_SURF threshold
-    df["Bhl ceil depth (m)"] = np.round(
-        np.maximum(0.0, (p_min + P_SURF - P_SURF) / BAR_PER_M), 2
-    )
-    # Re-derive correctly: ceil_per_comp is p_min (bar, already absolute-ish)
-    # Actually stored as (pt-a)*b. Convert to depth:
-    df["Bhl ceil depth (m)"] = np.round(p2depth(p_min + P_SURF), 2)
+    # p_min = (Pt-a)*b is already absolute pressure (bar)
+    # depth = (p_min - P_SURF) / BAR_PER_M  i.e. just p2depth(p_min)
+    p_min = res["ceil_per_comp"]
+    df["Bhl ceil depth (m)"] = np.round(p2depth(p_min), 2)
 
     st.dataframe(df, use_container_width=True, hide_index=True)
 
@@ -466,7 +463,7 @@ with tab1:
 # ─── Tab 2: per-compartment ceiling depths ────────────────────────────────────
 with tab2:
     p_min = res["ceil_per_comp"]
-    comp_depths = p2depth(p_min + P_SURF)
+    comp_depths = p2depth(p_min)   # p_min is absolute pressure; p2depth = (p - P_SURF)/BAR_PER_M
     offgas_comp_depths = res["offgas_per_comp"]
 
     st.subheader("Bühlmann Ceiling Depth per Compartment")
