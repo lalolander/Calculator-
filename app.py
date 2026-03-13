@@ -277,7 +277,7 @@ if max_depth > 0:
             'Bubble Growth Limit': limits
         }
         st.bar_chart(chart_data, x='Tissue', y=['Inert Gas Pressure', 'Bubble Growth Limit'])
-        st.caption("Note: Calculates the Ceiling based on the Bubble Growth Limit (Critical Gradient) per tissue)
+        st.caption("Note: Calculates the Ceiling based on the Bubble Growth Limit (Critical Gradient) per tissue.")
 
 else:
     st.info("Please enter a depth greater than 0.")
