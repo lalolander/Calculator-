@@ -235,7 +235,7 @@ if max_depth > 0:
         chart_data = {
             'Zone': [
                 'Surface (0m)', 
-                f'Bubble Limit ({ceiling_raw:.1f}m)', 
+                f'Ceiling ({ceiling_raw:.1f}m)', 
                 f'Planned Stop ({ceiling_practical:.0f}m)', 
                 f'Off-Gassing Start ({offgas_raw:.1f}m)', 
                 f'Bottom ({max_depth}m)'
@@ -244,7 +244,7 @@ if max_depth > 0:
         }
         st.bar_chart(chart_data, x='Zone', y='Depth (m)', horizontal=True)
         
-        st.success(f"✅ **Plan**: Ascend to **{ceiling_practical:.0f}m**. Stay there until bubble risk drops.")
+        st.success(f"✅ **Plan**: Ascend to **{ceiling_practical:.0f}m**.")
         
     else:
         st.success("✅ **No Decompression Stop Required**.")
