@@ -95,9 +95,9 @@ def depth_to_pressure(depth: float) -> float:
     return cfg.SURFACE_PRESSURE + depth * cfg.BAR_PER_METER
 
 
-def pressure_to_depth(p: float) -> float:
-    """Convert absolute pressure back to depth (m), clipped to 0."""
-    return max(0.0, (p - cfg.SURFACE_PRESSURE) / cfg.BAR_PER_METER)
+def pressure_to_depth(p):
+    """Convert absolute pressure back to depth (m), clipped to 0. Works on scalars and arrays."""
+    return np.maximum(0.0, (p - cfg.SURFACE_PRESSURE) / cfg.BAR_PER_METER)
 
 
 def inspired_pp(depth: float, fo2: float, fn2: float, fhe: float):
