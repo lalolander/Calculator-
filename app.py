@@ -354,7 +354,7 @@ k1, k2 = st.columns(2)
 
 with k1:
     oc = res["offgas_comp"]
-    practical_offgas = math.ceil(res["offgas_depth"] / 3.0) * 3 if res["offgas_depth"] > 0 else 0
+    practical_offgas = math.floor(res["offgas_depth"] / 3.0) * 3 if res["offgas_depth"] > 0 else 0
     st.markdown(f"""
     <div class="card">
       <div class="card-label">🔵 VPM — Off-gassing Start Depth</div>
